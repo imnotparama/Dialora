@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Phone, Clock, Zap, Activity, PhoneOff, Radio } from 'lucide-react';
+import { Phone, Mic, MicOff, Clock, Zap, Activity, PhoneOff, Radio, ChevronRight } from 'lucide-react';
 
 const EMOTION_CONFIG: Record<string, { emoji: string; color: string; label: string }> = {
   ANGRY:         { emoji: '😠', color: 'bg-red-900/50 text-red-300 border-red-700/40',       label: 'Angry' },

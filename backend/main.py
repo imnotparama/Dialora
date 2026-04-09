@@ -27,6 +27,7 @@ from models import Campaign, Contact, CallLog
 import local_ai
 import local_audio
 import twilio_calls
+import emotion_classifier  # NEW: HuggingFace emotion classifier
 
 connected_websockets = set()
 twilio_sessions = {}
@@ -63,6 +64,8 @@ def startup_event():
         print("Ollama: OFFLINE — run 'ollama serve'")
     print(f"Twilio: {'CONFIGURED' if os.getenv('TWILIO_ACCOUNT_SID') else 'NOT SET'}")
     print(f"ngrok: {os.getenv('NGROK_URL','NOT SET')}")
+    # NEW: Preload HuggingFace emotion classifier in background thread
+    threading.Thread(target=emotion_classifier.preload, daemon=True).start()
     print("="*50)
 
 
@@ -102,14 +105,16 @@ def check_ollama():
             "status": "online",
             "models": model_names,
             "twilio_configured": twilio_configured,
-            "ngrok_url": ngrok_url
+            "ngrok_url": ngrok_url,
+            "emotion_classifier_loaded": emotion_classifier.is_loaded()  # NEW
         }
     except:
         return {
             "status": "offline",
             "models": [],
             "twilio_configured": twilio_configured,
-            "ngrok_url": ngrok_url
+            "ngrok_url": ngrok_url,
+            "emotion_classifier_loaded": emotion_classifier.is_loaded()  # NEW
         }
 
 class CampaignCreate(BaseModel):
