@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 # NEW: Toggle between Bark (emotion-aware) and pyttsx3 (legacy, fast)
 # Set to True for emotion-aware TTS (slow on CPU ~8-10s/sentence, needs ~2GB download)
 # Set to False for instant pyttsx3 TTS (no emotion modulation, but zero latency)
-USE_BARK = False  # CHANGED: default False for hackathon demo speed; flip to True if GPU available
+USE_BARK = True  # CHANGED: set to True so you can hear the emotional Bark voices
 
 # ─── Bark model singleton ─────────────────────────────────────────────────────
 _bark_processor = None
