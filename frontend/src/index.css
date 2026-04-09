@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-dialora-navy text-gray-100 antialiased font-sans m-0 p-0;
+  }
+}
+
+/* Custom Scrollbar for Chat */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-dialora-indigo/50 rounded;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-dialora-indigo;
+}
