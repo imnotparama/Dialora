@@ -379,7 +379,7 @@ async def simulate_greeting(
                 knowledge_base=camp_kb
             ):
                 if chunk["type"] == "sentence":
-                    audio_file = local_audio.generate_tts(chunk["text"])
+                    audio_file = local_audio.generate_tts(chunk["text"], emotion="NEUTRAL")  # CHANGED: greeting has no caller emotion yet
                     chunk["audio_url"] = f"http://localhost:8000/static/{audio_file}" if audio_file else ""
                 loop.call_soon_threadsafe(queue.put_nowait, chunk)
         except Exception as e:
@@ -476,7 +476,7 @@ async def simulate_turn(
     context.append({"role": "user", "content": user_text})
     context.append({"role": "assistant", "content": ai_res['reply']})
     
-    audio_path = local_audio.generate_tts(ai_res['reply'])
+    audio_path = local_audio.generate_tts(ai_res['reply'], emotion=ai_res.get('emotion', 'NEUTRAL'))  # CHANGED: pass detected emotion
     
     return {
         "user_text": user_text,
@@ -512,6 +512,9 @@ async def simulate_turn_stream(
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
+    # NEW: Classify caller emotion from user text (used for emotion-aware TTS)
+    detected_emotion = emotion_classifier.classify_emotion(user_text)
+
     def run_streaming():
         try:
             for chunk in local_ai.get_ai_response_streaming(
@@ -522,7 +525,7 @@ async def simulate_turn_stream(
                 knowledge_base=camp_kb
             ):
                 if chunk["type"] == "sentence":
-                    audio_file = local_audio.generate_tts(chunk["text"])
+                    audio_file = local_audio.generate_tts(chunk["text"], emotion=detected_emotion)  # CHANGED: pass caller emotion
                     chunk["audio_url"] = f"http://localhost:8000/static/{audio_file}" if audio_file else ""
                 loop.call_soon_threadsafe(queue.put_nowait, chunk)
         except Exception as e:
