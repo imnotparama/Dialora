@@ -1,5 +1,5 @@
 # Dialora — Complete AI Handoff Document
-> Last updated: 2026-04-10. Written for a new AI agent to fully understand the entire codebase, architecture, decisions, and current state of the Dialora hackathon project.
+> Last updated: 2026-04-10 Session 5. Written for a new AI agent to fully understand the entire codebase, architecture, decisions, and current state of the Dialora hackathon project.
 
 ---
 
@@ -9,9 +9,9 @@ Dialora is an **AI-powered tele-calling agent** built for a hackathon. It starte
 
 - A **local LLM** (Ollama / Llama 3.2) handles all AI conversation logic.
 - **Browser-native Speech-to-Text** (`webkitSpeechRecognition` in Chrome) captures customer speech — bypassing Python 3.13's broken audio library ecosystem.
-- **pyttsx3** handles offline Text-to-Speech on the backend, generating WAV files served as static assets.
+- **pyttsx3** handles offline Text-to-Speech on the backend (with optional **suno/bark** for emotion-aware TTS).
 - **Twilio** is optionally layered on for real-world cellular call demonstrations. This requires a valid Twilio account + an Ngrok tunnel.
-- **Emotional Intelligence** — Nandita detects the caller's emotional state (ANGRY, FRUSTRATED, EXCITED, CONFUSED, HESITANT, DISINTERESTED, NEUTRAL, HAPPY, SAD) and adapts her tone and strategy in real time.
+- **Emotional Intelligence** — A **dedicated HuggingFace distilRoBERTa classifier** (`j-hartmann/emotion-english-distilroberta-base`) detects the caller's emotional state from their text. The LLM adapts its response strategy accordingly.
 - **Low-latency streaming** — Ollama responses stream sentence-by-sentence via SSE. The first word of Nandita's reply plays before the model has even finished generating the full response.
 
 **Project directory:** `c:\Users\hunte\Fantastic Four - Dialora\`
@@ -27,7 +27,8 @@ Dialora is an **AI-powered tele-calling agent** built for a hackathon. It starte
 | HTTP API | FastAPI + Uvicorn |
 | Database ORM | SQLAlchemy (SQLite) |
 | Local LLM | HTTP requests → Ollama @ `localhost:11434` |
-| Offline TTS | `pyttsx3` (generates `.wav` → `/static/`) |
+| Emotion Detection | `transformers` pipeline → `j-hartmann/emotion-english-distilroberta-base` (CPU) |
+| Offline TTS | `pyttsx3` (default) or `suno/bark` via `transformers` (optional, `USE_BARK=True`) |
 | Real-world telephony | `twilio` SDK |
 | Env config | `python-dotenv` |
 | Streaming | `asyncio` + `threading` + `asyncio.Queue` |
@@ -58,8 +59,9 @@ Fantastic Four - Dialora/
 │   ├── .env.example            ← Template for .env
 │   ├── database.py             ← SQLAlchemy engine + session factory
 │   ├── models.py               ← ORM models: Campaign, Contact, CallLog
-│   ├── local_ai.py             ← Ollama integration, streaming, emotion detection, QA scoring
-│   ├── local_audio.py          ← pyttsx3 TTS generator (simulator path only)
+│   ├── local_ai.py             ← Ollama integration, streaming, intent-only tags, QA scoring
+│   ├── emotion_classifier.py   ← HuggingFace distilRoBERTa emotion classifier (NEW)
+│   ├── local_audio.py          ← TTS: pyttsx3 (default) or suno/bark (USE_BARK flag)
 │   ├── twilio_calls.py         ← Twilio REST client + make_demo_call()
 │   ├── main.py                 ← FastAPI app: all routes + WebSocket + SSE
 │   ├── requirements.txt        ← Python dependencies
@@ -135,7 +137,7 @@ On startup, the app logs Ollama status (GET `/api/tags`), Twilio config, and Ngr
 ### Health & Config
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/health/ollama` | Returns `{ status, models, twilio_configured, ngrok_url }` |
+| GET | `/api/health/ollama` | Returns `{ status, models, twilio_configured, ngrok_url, emotion_classifier_loaded }` |
 
 ### Campaigns
 | Method | Path | Description |
@@ -157,8 +159,9 @@ On startup, the app logs Ollama status (GET `/api/tags`), Twilio config, and Ngr
 | Method | Path | Description |
 |---|---|---|
 | POST | `/api/simulate/start` | Init session context. Form: `session_id` |
+| **POST** | **`/api/simulate/greeting`** | **NEW — SSE auto-greeting.** Nandita speaks first. Form: `session_id, campaign_id`. Returns `text/event-stream`. |
 | POST | `/api/simulate/turn` | **Legacy** non-streaming turn. Form: `session_id, user_text, campaign_id`. Returns `{ user_text, reply, intent, audio_url }` |
-| **POST** | **`/api/simulate/turn/stream`** | **NEW — SSE streaming turn.** Form: `session_id, user_text, campaign_id`. Returns `text/event-stream`. See section 6. |
+| **POST** | **`/api/simulate/turn/stream`** | **SSE streaming turn.** Form: `session_id, user_text, campaign_id`. Returns `text/event-stream`. See section 6. |
 | POST | `/api/simulate/end` | Scores transcript via QA LLM, saves CallLog. JSON body: `{ campaign_id, transcript, final_intent }` |
 
 ### Twilio Real-World Calling
@@ -230,76 +233,112 @@ data: {"type": "error", "error": "OLLAMA_OFFLINE", "message": "..."}
 
 ---
 
-## 7. Local AI Module (`local_ai.py`)
+## 7. Emotion Detection — HuggingFace Classifier (`emotion_classifier.py`)
 
-### Emotional Intelligence System
+**This is a dedicated ML classifier, NOT the LLM.** It replaced the old approach of asking Llama 3.2 to append `[EMOTION:X]` tags (which was unreliable — Llama often forgot the tags or mangled the format).
 
-Nandita detects emotion from caller speech and adapts her response style. The system is a **dual-layer architecture**:
-1. **Keyword grounding** — deterministic pattern matching overrides LLM intent when strong signals found (e.g. "not interested", "call back")
-2. **LLM emotion + intent** — fallback for ambiguous turns
+### Architecture
+- **Model:** `j-hartmann/emotion-english-distilroberta-base` (DistilRoBERTa fine-tuned for emotion detection)
+- **Input:** The **caller's text** (user's speech), NOT Nandita's reply
+- **Output:** One of 10 Dialora emotions
+- **Latency:** ~5ms on CPU (vs wasting LLM tokens on formatting instructions)
+- **Loading:** Singleton pipeline, lazy-loaded on first call, cached as module-level variable
 
-### Emotion detection
-10 emotions: `ANGRY, FRUSTRATED, EXCITED, INTERESTED, CONFUSED, HESITANT, DISINTERESTED, SAD, NEUTRAL, HAPPY`
+### Label Mapping (HuggingFace 7 → Dialora 10)
+| Model label | Dialora emotion |
+|---|---|
+| `anger` | `ANGRY` |
+| `disgust` | `FRUSTRATED` |
+| `fear` | `HESITANT` |
+| `joy` | `HAPPY` |
+| `neutral` | `NEUTRAL` |
+| `sadness` | `SAD` |
+| `surprise` | `EXCITED` |
 
-Response strategy per emotion:
-- **ANGRY/FRUSTRATED** → De-escalate immediately. Do NOT pitch. Apologize.
-- **EXCITED/INTERESTED** → Match energy. Move toward close. Ask qualifying questions.
-- **CONFUSED** → Slow down. One piece of info at a time. Offer to re-explain.
-- **HESITANT** → Identify specific objection and address it directly.
-- **DISINTERESTED/SAD** → Empathetic. Don't push. Offer info by email/text instead.
-- **NEUTRAL/HAPPY** → Warm open question to draw them in.
+> Note: `INTERESTED`, `CONFUSED`, `DISINTERESTED` are NOT native HuggingFace labels — they're inferred contextually. The 7→10 mapping covers the most common cases; edge cases fall back to NEUTRAL.
 
-### Critical roleplay enforcement
-The system prompt starts with ALL CAPS anti-hallucination instructions:
-```
-CRITICAL ROLEPLAY INSTRUCTIONS:
-- You are CURRENTLY on a LIVE voice call with a human prospect.
-- NEVER break character. NEVER mention you are an AI.
-- NEVER offer to "help write a script" or "come up with ideas".
-- Respond directly to what the user says as if you are the person making the sales call.
-- Start speaking immediately in character.
-```
-> **Why this matters:** Llama 3.2 defaults to "helpful AI assistant" mode when given campaign context — it tries to write scripts FOR the user instead of playing Nandita. The CAPS override forces it to stay in-character.
+### Functions
+- `classify_emotion(text: str) -> str` — runs inference, returns mapped emotion string
+- `is_loaded() -> bool` — for `/api/health/ollama` status field
+- `preload()` — called from `main.py` startup in background thread
+
+### Graceful degradation
+If `transformers` is not installed, `classify_emotion()` logs a warning and returns `"NEUTRAL"` on every call. The app still works — just without emotion detection.
+
+---
+
+## 8. Local AI Module (`local_ai.py`)
+
+### Dual-Layer Intent + Emotion System
+
+Emotion and intent are now **completely decoupled**:
+1. **Emotion** → `emotion_classifier.classify_emotion(user_text)` (HuggingFace, deterministic)
+2. **Intent** → LLM `[INTENT:Y]` tag parsing + keyword grounding override
+
+The system prompt still instructs Nandita HOW to respond to emotions (de-escalation, energy matching, etc.), but she no longer has to OUTPUT emotion tags — that's handled by the classifier.
+
+### System Prompt (cleaned up in Session 5)
+- **CRITICAL ROLEPLAY INSTRUCTIONS** — all caps anti-hallucination block (kept)
+- **EMOTIONAL RESPONSE STRATEGY** — how to adapt tone per emotion (kept)
+- **CONVERSATION RULES** — max 3 sentences, end with question, [END_CALL] signal (kept)
+- **OUTPUT FORMAT** — now only `[INTENT:Y]` tag at end of reply (simplified from `[EMOTION:X][INTENT:Y]`)
+- **Twilio format** — `Reply: <text>\nIntent: <tag>` (simplified from `Emotion:\nReply:\nIntent:`)
 
 ### Functions
 
 #### `get_ai_response_streaming(prompt, context, business_context, script, knowledge_base)`
 - Generator function using `stream=True` against Ollama
-- Buffers tokens and yields `{"type":"sentence","text":"..."}` the moment a `.`, `!`, or `?` boundary is found
-- At end of stream, extracts `[EMOTION:X][INTENT:Y]` tags from full reply
-- Yields `{"type":"intent","intent":"...","emotion":"...","full_reply":"..."}`
-- Strips tags from yielded sentence text (not spoken aloud)
-- Prompt format: reply text + `[EMOTION:X][INTENT:Y]` at end
+- Buffers tokens and yields `{"type":"sentence","text":"..."}` per sentence boundary
+- Only strips `[INTENT:Y]` tags from spoken text (no more `[EMOTION:X]` to strip)
+- Calls `emotion_classifier.classify_emotion(prompt)` BEFORE streaming starts
+- At end: yields `{"type":"intent", "intent":"...", "emotion": <from classifier>, "full_reply":"..."}`
 
 #### `generate_ai_response(prompt, context, business_context, script, knowledge_base)`
-- Non-streaming, used exclusively by **Twilio webhook path**
-- Calls `POST http://localhost:11434/api/chat` with `stream: False`
-- Parses structured `Emotion: / Reply: / Intent:` format from LLM output
+- Non-streaming, used by **Twilio webhook path**
+- Parses `Reply: / Intent:` format (no more `Emotion:` line)
+- Calls `emotion_classifier.classify_emotion(prompt)` for the emotion field
 - Returns `{ reply, intent, emotion, raw, error }`
-- Error types: `OLLAMA_OFFLINE`, `OLLAMA_TIMEOUT`, `AI_ERROR`
-- Keyword grounding applied inside this function too
 
-#### `score_call(transcript)`
-- Independent QA Analyst call at end of simulation
-- `temperature: 0.1` for deterministic scoring
-- Forces strict JSON: `{ "summary": "...", "lead_score": 5, "final_intent": "Not Interested" }`
-- Returns `{ summary, lead_score, final_intent }`
+#### `score_call(transcript)` — unchanged
 
-#### `_classify_intent_from_user(user_text)` (private)
-- Keyword-matching function for grounding LLM intent
-- Priority: `Not Interested` > `Callback` > `Interested` > `None`
-- Returns `None` if ambiguous (defers to LLM)
+#### `_classify_intent_from_user(user_text)` — unchanged
 
-**Active model:** `llama3.2` (3B). `mistral:latest` also available but causes OOM on laptops during concurrent Twilio + simulator load.
+**Active model:** `llama3.2` (3B).
 
 ---
 
-## 8. Local Audio (`local_audio.py`)
+## 9. Local Audio (`local_audio.py`)
 
-- `generate_tts(text)` → uses `pyttsx3` to save audio to `./static/tts_<uuid>.wav`
-- Configured to select **first available female voice** (Microsoft Zira on Windows)
-- Returns the **filename** (not full path). Frontend prepends `http://localhost:8000/static/`
-- **Twilio exception:** pyttsx3 is NOT used for real calls. TwiML `<Say voice="Polly.Aditi">` (Indian English female) is used directly.
+### Dual-Engine TTS System (Session 5)
+
+`USE_BARK` flag at top of file controls which TTS engine is used:
+
+| `USE_BARK` | Engine | Speed | Emotion modulation |
+|---|---|---|---|
+| `False` (default) | pyttsx3 / Zira | ~0.5s | ❌ None |
+| `True` | suno/bark | ~8-10s/sentence | ✅ Bark tags |
+
+### Main function: `generate_tts(text, emotion="NEUTRAL")`
+- Routes to `generate_tts_bark()` or `generate_tts_legacy()` based on flag
+- Returns filename string (e.g. `tts_abc123.wav`). Frontend prepends `http://localhost:8000/static/`
+
+### Bark emotion → text tag mapping
+| Emotion | Bark prefix |
+|---|---|
+| EXCITED, HAPPY | `[laughs] ` |
+| HESITANT, CONFUSED | `[sighs] ` |
+| SAD | `[softly] ` |
+| All others | (no prefix) |
+
+- Voice preset: `v2/en_speaker_9` (Indian-accented English female)
+- Singleton model loading (~2GB download on first run)
+- Falls back to pyttsx3 if Bark fails to load
+
+### `generate_tts_legacy(text)` — original pyttsx3 function (renamed, not deleted)
+- Microsoft Zira on Windows
+- No emotion modulation
+
+**Twilio exception:** TTS is NOT used for real Twilio calls. TwiML `<Say voice="Polly.Aditi">` is used directly.
 
 ---
 
@@ -354,7 +393,7 @@ Routes defined in `App.tsx`:
 ### `App.tsx` — Global Infrastructure
 - `ToastContainer`: Global toast system. Triggered via exported `showToast(message, type)` function that dispatches a `CustomEvent('dialora-toast', ...)` on `window`.
 - NavLink: Active route detection with cyan left-border indicator + lucide icon.
-- Sidebar: Spinning conic-gradient Dialora logo, nav links, live AI engine status (polls `/api/health/ollama` every 10s), version badge.
+- Sidebar: Spinning conic-gradient Dialora logo, nav links, live AI engine status (polls `/api/health/ollama` every 10s), **ngrok URL display**, version badge `v2.0 · EI Edition`.
 - Background: `#0a0f1e` main, `#080c17` sidebar.
 
 ### `Dashboard.tsx`
@@ -380,15 +419,17 @@ Routes defined in `App.tsx`:
 
 #### Call flow:
 1. User clicks **"Start Audio Session"** → `startCall()` activates `webkitSpeechRecognition`
-2. Recognition runs continuously (`continuous: true`, `lang: 'en-IN'`)
-3. Non-final results → live "listening bubble" in chat
-4. On `.isFinal` → `handleTurn(transcript)` fires
-5. Mic pauses (`recognition.stop()`)
-6. Empty streaming AI bubble appears immediately (loading spinner)
-7. `fetch('POST /api/simulate/turn/stream')` opened as SSE stream
-8. `sentence` events → bubble text grows word-by-word, first audio queued immediately
-9. `done` event → emit received, streaming cursor removed, last user bubble retroactively tagged with detected emotion
-10. Audio queue finishes → mic resumes (`recognition.start()`)
+2. **Auto-greeting**: Nandita speaks first via `/api/simulate/greeting` SSE — no awkward silence
+3. **"Nandita is speaking" indicator** shows with soundwave animation while audio plays
+4. Recognition runs continuously (`continuous: true`, `lang: 'en-IN'`)
+5. Non-final results → live "listening bubble" in chat
+6. On `.isFinal` → `handleTurn(transcript)` fires
+7. Mic pauses (`recognition.stop()`)
+8. Empty streaming AI bubble appears immediately (loading spinner)
+9. `fetch('POST /api/simulate/turn/stream')` opened as SSE stream
+10. `sentence` events → bubble text grows word-by-word, first audio queued immediately
+11. `done` event → emit received, streaming cursor removed, last user bubble retroactively tagged with detected emotion
+12. Audio queue finishes → mic resumes (`recognition.start()`)
 
 #### Emotion UI:
 - **EMOTION_CONFIG** defines 10 emotions with `{ emoji, color, glow, label }`:
@@ -423,6 +464,8 @@ let isPlayingAudio = false;
 ### `LiveCallDashboard.tsx` — Dedicated Live Monitor
 - WebSocket to `ws://localhost:8000/ws/calls` with 3s auto-reconnect
 - **IntentMeter**: Visual progress bar (Not Interested → Neutral → Interested) with glow
+- **Emotion badges** on each AI transcript bubble (colored emoji pills)
+- **Live emotion badge** in LIVE call banner header (updates every turn)
 - Real-time transcript, session stats, recent call history sidebar
 
 ---
@@ -482,17 +525,19 @@ npm run dev   # Starts Vite dev server at http://localhost:5173
 
 ## 13. Known Issues & Gotchas
 
-- **`requirements.txt` encoding:** The `twilio` line may have garbled UTF-16 encoding. If `pip install` fails, manually run `pip install twilio>=8.0.0`.
+- **`requirements.txt` encoding:** Fixed in Session 5. If it reappears, the file was re-saved as UTF-16.
 - **Chrome-only STT:** `webkitSpeechRecognition` only works in Google Chrome. Firefox/Safari show an alert and refuse.
 - **`pyttsx3` event loop:** On the Twilio call path, pyttsx3 blocks the async event loop. Use `Polly.Aditi` TwiML `<Say>` exclusively for Twilio calls.
-- **Ollama cold start:** First request after `ollama serve` can take 15–30 seconds. The simulator shows "still thinking" message after 20s.
+- **Ollama cold start:** Model is now **pre-warmed on startup** (background thread, `num_predict=1`). First real request is instant.
+- **HuggingFace model download:** The emotion classifier model (~300MB) and Bark model (~2GB, if enabled) download on first run. They're cached by HuggingFace in `~/.cache/huggingface/`.
 - **Historical transcript parsing:** Legacy call logs may have malformed transcript JSON. Backend `GET /api/calllogs` wraps `json.loads()` in try/except.
 - **SQLite threading:** `connect_args={"check_same_thread": False}` set in `database.py`.
 - **No auth:** Hackathon MVP. All APIs are open.
 - **Llama character break:** Without the CRITICAL ROLEPLAY INSTRUCTIONS preamble, Llama 3.2 interprets campaign context as a request to help write scripts rather than act as Nandita. Never remove these lines.
-- **NGROK_URL stale:** NGROK_URL changes on every `ngrok` restart. Always update `.env`. The frontend "Re-check Config" button re-fetches health status so the modal updates without page reload.
-- **`.env` UTF-16 corruption:** Windows Notepad may save `.env` as UTF-16. If `TWILIO_ACCOUNT_SID` shows garbled prefix (e.g. `765tre`), rewrite the line using the editor or a tool that saves as UTF-8.
-- **Twilio `speech_timeout`:** Set to `1` second (not `"auto"`) for faster turn-taking on live calls. `"auto"` causes Twilio to wait too long after each utterance.
+- **NGROK_URL stale:** NGROK_URL changes on every `ngrok` restart. Always update `.env`. Ngrok URL is now **visible in the sidebar**.
+- **`.env` UTF-16 corruption:** Fixed in Session 4. If it reappears, rewrite the file as UTF-8.
+- **Twilio `speech_timeout`:** Set to `1` second (not `"auto"`) for faster turn-taking on live calls.
+- **Bark TTS speed:** ~8-10s per sentence on CPU. Keep `USE_BARK = False` during live demos unless you have a GPU.
 
 ---
 
@@ -508,32 +553,43 @@ npm run dev   # Starts Vite dev server at http://localhost:5173
 - [x] Global toast notification system (replaces all `alert()` calls)
 - [x] Ollama health check + status indicator in sidebar
 - [x] "Linear-style" dark premium UI (glassmorphism, glows, micro-animations)
+- [x] Ollama pre-warm on startup (background thread, model hot before first demo)
+- [x] Ngrok URL displayed in sidebar
 
 ### Call Simulator
 - [x] Browser-native STT via `webkitSpeechRecognition` (Chrome only)
 - [x] Offline TTS via `pyttsx3` → static WAV files
+- [x] Optional emotion-aware TTS via suno/bark (`USE_BARK` flag)
 - [x] Continuous hands-free mode with auto mic suspend/resume
 - [x] Chrome 60s STT timeout resilience (auto-restart on `onend`)
 - [x] Text fallback input for when mic fails
+- [x] **Auto-greeting** — Nandita speaks first via `/api/simulate/greeting` SSE
+- [x] **"Nandita is speaking" indicator** with soundwave animation
 - [x] Intent classification: real-time `Interested / Not Interested / Neutral`
 - [x] Keyword-based intent grounding (overrides LLM hallucinations)
 - [x] End-call QA scoring: `lead_score 0-10 + summary + final_intent`
 - [x] Post-call summary screen with animated gauge + confetti for score ≥ 7
+- [x] Turn counter in call header
 
-### Emotional Intelligence (Session 3)
-- [x] 10-emotion detection: ANGRY, FRUSTRATED, EXCITED, INTERESTED, CONFUSED, HESITANT, DISINTERESTED, SAD, NEUTRAL, HAPPY
-- [x] Tone adaptation per emotion (de-escalation, energy matching, simplification, objection handling)
+### Emotional Intelligence
+- [x] **HuggingFace distilRoBERTa classifier** — replaces unreliable LLM [EMOTION:X] tags
+- [x] 7 HuggingFace labels → 10 Dialora emotions (anger→ANGRY, joy→HAPPY, etc.)
+- [x] Classifier runs on USER's text (not Nandita's reply) — detects CALLER emotion
+- [x] ~5ms inference on CPU (vs ~500ms wasted on LLM tag generation)
+- [x] Tone adaptation per emotion (de-escalation, energy matching, simplification)
 - [x] Strict roleplay enforcement to prevent Llama character breaks
 - [x] Live Emotion Badge in simulator header (updates every turn)
 - [x] Emotion pill retroactively tagged under user chat bubbles
 - [x] Emotion shown on post-call summary card
 - [x] `emotion` field broadcast in WebSocket `ai_replied` events
+- [x] Emotion badges on Live Call Dashboard transcript bubbles
 
-### Low-Latency Streaming (Session 3)
+### Low-Latency Streaming
 - [x] `get_ai_response_streaming()` — Ollama `stream=True` generator
 - [x] Sentence-boundary detection → yields each sentence immediately
-- [x] `[EMOTION:X][INTENT:Y]` end-tags stripped from spoken sentences
+- [x] `[INTENT:Y]` end-tags stripped from spoken sentences (no more [EMOTION:X])
 - [x] `/api/simulate/turn/stream` SSE endpoint (threading + asyncio.Queue bridge)
+- [x] `/api/simulate/greeting` SSE endpoint (auto-greeting on call start)
 - [x] Per-sentence TTS generation in background thread
 - [x] Frontend audio queue: sentence 1 plays while sentence 2 is being generated
 - [x] Streaming bubble: loading spinner → growing text → blinking cursor → static
@@ -560,5 +616,6 @@ npm run dev   # Starts Vite dev server at http://localhost:5173
 |---|---|
 | Session 1 | Initial build: FastAPI backend, Ollama integration, Campaign + Contact models, basic simulator |
 | Session 2 | Dashboard analytics, CSV upload, call log scoring, Twilio integration, premium UI overhaul |
-| Session 3 | Latency reduction (SSE streaming), Emotional Intelligence (10 emotions), Twilio bug fixes, Nandita persona |
-| **Session 4 (current)** | `.env` UTF-16 fix, Twilio setup guide modal, fixed `generate_ai_response` arg order, lazy Twilio client, roleplay enforcement, GitHub push |
+| Session 3 | Latency reduction (SSE streaming), Emotional Intelligence (10 emotions via LLM tags), Twilio bug fixes, Nandita persona |
+| Session 4 | `.env` UTF-16 fix, Twilio setup guide modal, fixed `generate_ai_response` arg order, lazy Twilio client, roleplay enforcement |
+| **Session 5 (current)** | HuggingFace emotion classifier, Bark TTS, auto-greeting, speaking indicator, Ollama pre-warm, ngrok in sidebar, emotion in live monitor, claude.md full rewrite |
