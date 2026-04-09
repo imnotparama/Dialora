@@ -1,8 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Phone, Mic, MicOff, Clock, Zap, Activity, PhoneOff, Radio, ChevronRight } from 'lucide-react';
+import { Phone, Clock, Zap, Activity, PhoneOff, Radio } from 'lucide-react';
+
+const EMOTION_CONFIG: Record<string, { emoji: string; color: string; label: string }> = {
+  ANGRY:         { emoji: '😠', color: 'bg-red-900/50 text-red-300 border-red-700/40',       label: 'Angry' },
+  FRUSTRATED:    { emoji: '😤', color: 'bg-orange-900/50 text-orange-300 border-orange-700/40', label: 'Frustrated' },
+  EXCITED:       { emoji: '🤩', color: 'bg-yellow-900/50 text-yellow-300 border-yellow-700/40', label: 'Excited' },
+  INTERESTED:    { emoji: '😊', color: 'bg-green-900/50 text-green-300 border-green-700/40',   label: 'Interested' },
+  CONFUSED:      { emoji: '😕', color: 'bg-blue-900/50 text-blue-300 border-blue-700/40',     label: 'Confused' },
+  HESITANT:      { emoji: '🤔', color: 'bg-purple-900/50 text-purple-300 border-purple-700/40', label: 'Hesitant' },
+  DISINTERESTED: { emoji: '😑', color: 'bg-gray-800/50 text-gray-400 border-gray-700/40',     label: 'Disinterested' },
+  NEUTRAL:       { emoji: '😐', color: 'bg-slate-800/50 text-slate-300 border-slate-700/40',   label: 'Neutral' },
+  HAPPY:         { emoji: '😄', color: 'bg-cyan-900/50 text-cyan-300 border-cyan-700/40',     label: 'Happy' },
+  SAD:           { emoji: '😢', color: 'bg-indigo-900/50 text-indigo-300 border-indigo-700/40', label: 'Sad' },
+};
 
 type TurnRole = 'user' | 'ai';
-interface Turn { role: TurnRole; text: string; intent?: string; ts: string; }
+interface Turn { role: TurnRole; text: string; intent?: string; emotion?: string; ts: string; }
 type WsStatus = 'connecting' | 'live' | 'idle' | 'error';
 
 function IntentMeter({ intent }: { intent: string }) {
@@ -63,6 +76,7 @@ export default function LiveCallDashboard() {
   const [callInfo, setCallInfo] = useState<any>(null);
   const [transcript, setTranscript] = useState<Turn[]>([]);
   const [currentIntent, setCurrentIntent] = useState('Neutral');
+  const [currentEmotion, setCurrentEmotion] = useState('NEUTRAL');
   const [duration, setDuration] = useState(0);
   const [totalCalls, setTotalCalls] = useState(0);
   const [callHistory, setCallHistory] = useState<any[]>([]);
@@ -127,8 +141,9 @@ export default function LiveCallDashboard() {
 
           if (data.type === 'ai_replied') {
             const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            setTranscript(prev => [...prev, { role: 'ai', text: data.text, intent: data.intent, ts: now }]);
+            setTranscript(prev => [...prev, { role: 'ai', text: data.text, intent: data.intent, emotion: data.emotion, ts: now }]);
             setCurrentIntent(data.intent || 'Neutral');
+            setCurrentEmotion((data.emotion || 'NEUTRAL').toUpperCase());
           }
 
           if (data.type === 'call_ended') {
@@ -226,9 +241,18 @@ export default function LiveCallDashboard() {
                   <p className="text-red-400/70 text-xs font-mono">{callInfo?.call_sid}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 text-red-300 font-mono text-2xl font-black">
-                <Clock className="w-5 h-5 text-red-400" />
-                {formatDuration(duration)}
+              <div className="flex items-center gap-4">
+                {/* Live Emotion Badge */}
+                {currentEmotion && currentEmotion !== 'NEUTRAL' && (
+                  <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold ${EMOTION_CONFIG[currentEmotion]?.color || ''}`}>
+                    <span className="text-base leading-none">{EMOTION_CONFIG[currentEmotion]?.emoji}</span>
+                    <span>{EMOTION_CONFIG[currentEmotion]?.label.toUpperCase()}</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-2 text-red-300 font-mono text-2xl font-black">
+                  <Clock className="w-5 h-5 text-red-400" />
+                  {formatDuration(duration)}
+                </div>
               </div>
             </div>
           )}
@@ -239,14 +263,12 @@ export default function LiveCallDashboard() {
               <Activity className="w-4 h-4 text-cyan-400" />
               <span className="text-sm font-bold text-gray-300 uppercase tracking-widest">Live Transcript</span>
               {callActive && (
-                <span className="ml-auto flex items-center gap-2 text-xs text-red-400 font-bold">
-                  <Mic className="w-3 h-3 animate-pulse" /> Recording
+                <span className="ml-auto flex items-center gap-1.5 text-xs text-red-400 font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" /> Recording
                 </span>
               )}
               {!callActive && (
-                <span className="ml-auto flex items-center gap-2 text-xs text-gray-600 font-bold">
-                  <MicOff className="w-3 h-3" /> Waiting for call…
-                </span>
+                <span className="ml-auto text-xs text-gray-600 font-bold">Waiting for call…</span>
               )}
             </div>
 
@@ -277,6 +299,13 @@ export default function LiveCallDashboard() {
                       }`}>
                         {turn.text}
                       </div>
+                      {/* Emotion badge on AI turns */}
+                      {turn.role === 'ai' && turn.emotion && turn.emotion !== 'NEUTRAL' && (
+                        <div className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-[10px] font-bold ${EMOTION_CONFIG[turn.emotion]?.color || ''}`}>
+                          <span>{EMOTION_CONFIG[turn.emotion]?.emoji}</span>
+                          <span>{EMOTION_CONFIG[turn.emotion]?.label}</span>
+                        </div>
+                      )}
                       <span className="text-[10px] text-gray-700">{turn.ts}</span>
                     </div>
                   </div>

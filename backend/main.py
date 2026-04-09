@@ -57,11 +57,27 @@ def startup_event():
         r = requests.get("http://localhost:11434/api/tags", timeout=3)
         models = [m['name'] for m in r.json().get('models',[])]
         print(f"Ollama: ONLINE — Models: {models}")
+        # Pre-warm: load model into RAM so first real request is instant
+        threading.Thread(target=_prewarm_ollama, daemon=True).start()
     except:
         print("Ollama: OFFLINE — run 'ollama serve'")
     print(f"Twilio: {'CONFIGURED' if os.getenv('TWILIO_ACCOUNT_SID') else 'NOT SET'}")
     print(f"ngrok: {os.getenv('NGROK_URL','NOT SET')}")
     print("="*50)
+
+
+def _prewarm_ollama():
+    """Sends a tiny request so Llama is loaded into RAM before the first demo."""
+    try:
+        requests.post(
+            "http://localhost:11434/api/chat",
+            json={"model": "llama3.2", "messages": [{"role": "user", "content": "hi"}],
+                  "stream": False, "num_predict": 1},
+            timeout=60
+        )
+        print("[Dialora] ✓ Ollama pre-warm complete — model is hot and ready.")
+    except Exception as e:
+        print(f"[Dialora] Pre-warm skipped: {e}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -321,6 +337,78 @@ def get_campaigns(db: Session = Depends(get_db)):
 def start_sim(session_id: str = Form(...)):
     sim_contexts[session_id] = []
     return {"status": "started"}
+
+
+@app.post("/api/simulate/greeting")
+async def simulate_greeting(
+    session_id: str = Form(...),
+    campaign_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """SSE endpoint — generates Nandita's context-aware opening line to auto-start the call."""
+    if session_id not in sim_contexts:
+        sim_contexts[session_id] = []
+
+    camp_ctx = camp_script = camp_kb = None
+    campaign_name = "this service"
+    if campaign_id:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if campaign:
+            camp_ctx = campaign.business_context
+            camp_script = campaign.script
+            camp_kb = campaign.knowledge_base
+            campaign_name = campaign.name
+
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def run_greeting():
+        try:
+            # Inject a hidden trigger that makes Nandita open the conversation
+            trigger = f"[CALL_STARTED] Generate your natural, warm opening line for this sales call. Introduce yourself as Nandita and briefly mention why you're calling. One or two sentences only."
+            for chunk in local_ai.get_ai_response_streaming(
+                prompt=trigger,
+                context=[],
+                business_context=camp_ctx,
+                script=camp_script,
+                knowledge_base=camp_kb
+            ):
+                if chunk["type"] == "sentence":
+                    audio_file = local_audio.generate_tts(chunk["text"])
+                    chunk["audio_url"] = f"http://localhost:8000/static/{audio_file}" if audio_file else ""
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "error": str(e)})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    threading.Thread(target=run_greeting, daemon=True).start()
+
+    async def greeting_generator():
+        full_text = ""
+        try:
+            while True:
+                chunk = await asyncio.wait_for(queue.get(), timeout=30.0)
+                if chunk is None:
+                    break
+                if chunk["type"] == "sentence":
+                    full_text += chunk["text"] + " "
+                    yield f"data: {json.dumps({'type': 'sentence', 'text': chunk['text'], 'audio_url': chunk.get('audio_url', '')})}\n\n"
+                elif chunk["type"] == "intent":
+                    # Store greeting in context so the AI remembers it said it
+                    sim_contexts[session_id].append({"role": "assistant", "content": full_text.strip()})
+                    yield f"data: {json.dumps({'type': 'done', 'full_reply': full_text.strip()})}\n\n"
+                elif chunk["type"] == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'message': chunk.get('error', 'Unknown error')})}\n\n"
+                    break
+        except asyncio.TimeoutError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Greeting timed out'})}\n\n"
+
+    return StreamingResponse(
+        greeting_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+    )
 
 @app.post("/api/simulate/turn")
 async def simulate_turn(

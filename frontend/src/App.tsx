@@ -69,12 +69,16 @@ function NavLink({ to, icon: Icon, children }: { to: string, icon: any, children
 
 function AppContent() {
   const [ollamaStatus, setOllamaStatus] = useState<'online'|'offline'>('offline');
+  const [ngrokUrl, setNgrokUrl] = useState<string>('');
   
   useEffect(() => {
     const checkOllama = () => {
       fetch('http://localhost:8000/api/health/ollama')
         .then(res => res.ok ? res.json() : { status: 'offline' })
-        .then(data => setOllamaStatus(data.status))
+        .then(data => {
+          setOllamaStatus(data.status);
+          if (data.ngrok_url) setNgrokUrl(data.ngrok_url);
+        })
         .catch(() => setOllamaStatus('offline'));
     };
     checkOllama();
@@ -116,9 +120,17 @@ function AppContent() {
               AI Engine: <span className={ollamaStatus === 'online' ? 'text-green-400' : 'text-red-400'}>{ollamaStatus === 'online' ? 'Online' : 'Offline'}</span>
             </span>
           </div>
+          {ngrokUrl && (
+            <div className="px-2 flex items-center gap-1.5 group cursor-default" title={ngrokUrl}>
+              <span className="w-2 h-2 rounded-full bg-cyan-500/70 shrink-0" />
+              <span className="text-[10px] text-gray-600 font-mono truncate max-w-[180px] group-hover:text-gray-400 transition-colors">
+                {ngrokUrl.replace('https://', '')}
+              </span>
+            </div>
+          )}
           <div className="px-2">
             <span className="text-[10px] uppercase font-bold tracking-widest text-gray-600 bg-gray-800/50 px-2 py-1 rounded-md border border-gray-700/50">
-              v1.0 • Hackathon Build
+              v2.0 · EI Edition
             </span>
           </div>
         </div>
