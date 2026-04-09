@@ -43,6 +43,18 @@ export default function CallSimulator() {
   }, [messages, isProcessing, liveTranscript]);
 
   useEffect(() => {
+    if (!isProcessing) return;
+    const timer = setTimeout(() => {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'I am still thinking... Llama may be loading. Please wait.',
+        timestamp: new Date()
+      }]);
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [isProcessing]);
+
+  useEffect(() => {
     navigator.mediaDevices.getUserMedia({ audio: true }).then(() => setMicPermission(true)).catch(() => setMicPermission(false));
     fetch('http://localhost:8000/api/campaigns').then(res => res.json()).then(data => {
       setCampaigns(data);
@@ -366,9 +378,9 @@ export default function CallSimulator() {
                 ) : (
                   <div className="flex justify-start animate-fade-in">
                     <div className="flex gap-4 max-w-[80%] items-end">
-                      <div className="w-8 h-8 rounded-full bg-cyan-950 border border-cyan-500/50 flex items-center justify-center text-cyan-400 text-xs font-bold shrink-0 shadow-[0_0_10px_rgba(6,182,212,0.3)] select-none">
-                        D
-                      </div>
+                       <div className="w-8 h-8 rounded-full bg-cyan-950 border border-cyan-500/50 flex items-center justify-center text-cyan-400 text-xs font-bold shrink-0 shadow-[0_0_10px_rgba(6,182,212,0.3)] select-none">
+                         N
+                       </div>
                       <div className="flex flex-col items-start gap-1.5">
                         <div className="bg-[#1c2336] border-l-4 border-cyan-500 text-gray-200 rounded-2xl rounded-bl-sm px-5 py-3 text-sm shadow-xl">
                           {m.content}
@@ -402,10 +414,10 @@ export default function CallSimulator() {
             {isProcessing && (
               <div className="flex justify-start animate-fade-in">
                 <div className="flex gap-4 max-w-[80%] items-end">
-                  <div className="w-8 h-8 rounded-full bg-[#1c2336] border border-cyan-500/30 flex items-center justify-center text-cyan-400/50 text-xs font-bold shrink-0">D</div>
+                  <div className="w-8 h-8 rounded-full bg-[#1c2336] border border-cyan-500/30 flex items-center justify-center text-cyan-400/50 text-xs font-bold shrink-0">N</div>
                   <div className="bg-[#1c2336] border-l-4 border-gray-600 rounded-2xl rounded-bl-sm px-5 py-3 text-sm flex items-center gap-3">
                     <div className="w-4 h-4 border-2 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin"></div>
-                    <span className="text-gray-400 animate-pulse font-medium">Dialora is thinking...</span>
+                    <span className="text-gray-400 animate-pulse font-medium">Nandita is thinking...</span>
                   </div>
                 </div>
               </div>

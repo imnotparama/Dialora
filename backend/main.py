@@ -5,6 +5,9 @@ import csv
 from io import StringIO
 from typing import Optional, List
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI, Form, File, UploadFile, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -43,6 +46,21 @@ app = FastAPI(title="Dialora Local API")
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+@app.on_event("startup")
+def startup_event():
+    print("="*50)
+    print("DIALORA BACKEND STARTED")
+    print(f"Ollama: checking...")
+    try:
+        r = requests.get("http://localhost:11434/api/tags", timeout=3)
+        models = [m['name'] for m in r.json().get('models',[])]
+        print(f"Ollama: ONLINE — Models: {models}")
+    except:
+        print("Ollama: OFFLINE — run 'ollama serve'")
+    print(f"Twilio: {'CONFIGURED' if os.getenv('TWILIO_ACCOUNT_SID') else 'NOT SET'}")
+    print(f"ngrok: {os.getenv('NGROK_URL','NOT SET')}")
+    print("="*50)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,18 +73,25 @@ sim_contexts = {}
 
 @app.get("/api/health/ollama")
 def check_ollama():
+    twilio_configured = bool(os.getenv("TWILIO_ACCOUNT_SID"))
+    ngrok_url = os.getenv("NGROK_URL", "")
+
     try:
         response = requests.get("http://localhost:11434/api/tags", timeout=3)
         models = response.json().get("models", [])
         model_names = [m["name"] for m in models]
         return {
             "status": "online",
-            "models": model_names
+            "models": model_names,
+            "twilio_configured": twilio_configured,
+            "ngrok_url": ngrok_url
         }
     except:
         return {
             "status": "offline",
-            "models": []
+            "models": [],
+            "twilio_configured": twilio_configured,
+            "ngrok_url": ngrok_url
         }
 
 class CampaignCreate(BaseModel):
@@ -159,12 +184,21 @@ def get_call_logs(db: Session = Depends(get_db)):
     res = []
     for log, campaign in logs:
         campaign_name = campaign.name if campaign else "Simulated"
+        
+        parsed_transcript = []
+        if log.transcript:
+            try:
+                parsed_transcript = json.loads(log.transcript)
+            except:
+                pass
+                
         res.append({
             "id": log.id,
             "campaign_name": campaign_name,
             "intent_tag": log.intent_tag,
             "lead_score": log.lead_score,
             "summary": log.summary,
+            "transcript": parsed_transcript,
             "created_at": log.created_at.isoformat() if log.created_at else None
         })
     return res
@@ -369,8 +403,7 @@ async def websocket_endpoint(websocket: WebSocket):
         connected_websockets.discard(websocket)
 
 @app.post("/twilio/voice")
-async def twilio_voice(request: Request, campaign_id: str = ""):
-    db = next(get_db())
+async def twilio_voice(request: Request, campaign_id: str = "", db: Session = Depends(get_db)):
     if campaign_id:
         campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
         context = campaign.business_context if campaign else "AI tele-calling agent"
@@ -385,9 +418,7 @@ async def twilio_voice(request: Request, campaign_id: str = ""):
         "context": context
     }
     
-    greeting = f"Hello! I'm calling from Dialora. {context}. Is this a good time to talk?"
-    audio_path = local_audio.generate_tts(greeting)
-    audio_file = os.path.basename(audio_path)
+    greeting = f"Hello! My name is Nandita, and I'm calling on behalf of Dialora. {context}. Is this a good time to talk?"
     
     await broadcast_ws({
         "type": "call_started",
@@ -398,7 +429,10 @@ async def twilio_voice(request: Request, campaign_id: str = ""):
     
     response = VoiceResponse()
     ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
-    response.play(f"{ngrok_url}/static/{audio_file}")
+    
+    # Female Indian English voice for Nandita
+    response.say(greeting, voice="Polly.Aditi")
+    
     gather = Gather(
         input="speech",
         action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
@@ -410,65 +444,68 @@ async def twilio_voice(request: Request, campaign_id: str = ""):
 
 @app.post("/twilio/gather")
 async def twilio_gather(request: Request, call_sid: str = ""):
-    form = await request.form()
-    user_text = form.get("SpeechResult", "")
-    
-    if not user_text or call_sid not in twilio_sessions:
-        response = VoiceResponse()
-        response.hangup()
-        return Response(content=str(response), media_type="application/xml")
-    
-    session = twilio_sessions[call_sid]
-    
-    await broadcast_ws({
-        "type": "user_spoke",
-        "call_sid": call_sid,
-        "text": user_text
-    })
-    
-    session["messages"].append({"role": "user", "content": user_text})
-    
-    # We call our existing local_ai logic
-    result = local_ai.generate_ai_response(user_text, session["messages"], session["context"])
-    reply = result["reply"]
-    intent = result["intent"]
-    
-    session["messages"].append({"role": "assistant", "content": reply})
-    
-    await broadcast_ws({
-        "type": "ai_replied",
-        "call_sid": call_sid,
-        "text": reply,
-        "intent": intent
-    })
-    
-    audio_path = local_audio.generate_tts(reply)
-    audio_file = os.path.basename(audio_path)
-    
-    response = VoiceResponse()
-    ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
-    response.play(f"{ngrok_url}/static/{audio_file}")
-    
-    if "[END_CALL]" in reply or len(session["messages"]) > 20:
-        response.hangup()
+    try:
+        form = await request.form()
+        user_text = form.get("SpeechResult", "")
         
-        # Save to DB optionally natively later
+        if not user_text or call_sid not in twilio_sessions:
+            response = VoiceResponse()
+            ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
+            response.say("Sorry, I didn't catch that. Could you say that again?", voice="Polly.Aditi")
+            gather = Gather(input="speech", action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}", speech_timeout="auto", language="en-IN")
+            response.append(gather)
+            return Response(content=str(response), media_type="application/xml")
+        
+        session = twilio_sessions[call_sid]
+        
         await broadcast_ws({
-            "type": "call_ended",
+            "type": "user_spoke",
             "call_sid": call_sid,
-            "status": "completed"
+            "text": user_text
         })
-        twilio_sessions.pop(call_sid, None)
+        
+        session["messages"].append({"role": "user", "content": user_text})
+        
+        # Call the LLM — guard against None reply
+        result = local_ai.generate_ai_response(user_text, session["messages"], session["context"])
+        reply = result.get("reply") or "Let me think about that for a moment. Could you tell me more?"
+        intent = result.get("intent", "Neutral")
+        
+        session["messages"].append({"role": "assistant", "content": reply})
+        
+        await broadcast_ws({
+            "type": "ai_replied",
+            "call_sid": call_sid,
+            "text": reply,
+            "intent": intent
+        })
+        
+        response = VoiceResponse()
+        ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
+        
+        response.say(reply, voice="Polly.Aditi")
+        
+        if "[END_CALL]" in reply or len(session["messages"]) > 20:
+            response.hangup()
+            await broadcast_ws({"type": "call_ended", "call_sid": call_sid, "status": "completed"})
+            twilio_sessions.pop(call_sid, None)
+            return Response(content=str(response), media_type="application/xml")
+        
+        gather = Gather(
+            input="speech",
+            action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
+            speech_timeout="auto",
+            language="en-IN"
+        )
+        response.append(gather)
         return Response(content=str(response), media_type="application/xml")
-    
-    gather = Gather(
-        input="speech",
-        action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
-        speech_timeout="auto",
-        language="en-IN"
-    )
-    response.append(gather)
-    return Response(content=str(response), media_type="application/xml")
+
+    except Exception as e:
+        print(f"[ERROR] twilio_gather crashed: {e}")
+        fallback = VoiceResponse()
+        fallback.say("Sorry, something went wrong on our end. Please hold.", voice="Polly.Aditi")
+        fallback.hangup()
+        return Response(content=str(fallback), media_type="application/xml")
 
 @app.post("/twilio/status")
 async def twilio_status(request: Request):

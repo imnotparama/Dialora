@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone, X, Mic } from 'lucide-react';
+import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone, X, Mic, MessageSquare } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 function AnimatedCounter({ value }: { value: number | string }) {
@@ -46,6 +46,8 @@ export default function Dashboard() {
   const [showDemoModal, setShowDemoModal] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<string>("");
   const [campaigns, setCampaigns] = useState<any[]>([]);
+  const [serverConfig, setServerConfig] = useState<any>(null);
+  const [selectedLog, setSelectedLog] = useState<any>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -95,17 +97,19 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const [st, cl, ac, camps] = await Promise.all([
+      const [st, cl, ac, camps, conf] = await Promise.all([
         fetch('http://localhost:8000/api/stats').then(r => r.json()),
         fetch('http://localhost:8000/api/calllogs').then(r => r.json()),
         fetch('http://localhost:8000/api/activity').then(r => r.json()),
-        fetch('http://localhost:8000/api/campaigns').then(r => r.json())
+        fetch('http://localhost:8000/api/campaigns').then(r => r.json()),
+        fetch('http://localhost:8000/api/health/ollama').then(r => r.json())
       ]);
-      setStats(st);
-      setCallLogs(cl);
-      setActivity(ac);
-      setCampaigns(camps);
-      if (camps.length > 0 && !selectedCampaign) setSelectedCampaign(camps[0].id.toString());
+      setStats(st && !st.detail ? st : { total_calls: 0, conversion_rate: 0, active_campaigns: 0, recent_campaigns: [] });
+      setCallLogs(Array.isArray(cl) ? cl : []);
+      setActivity(Array.isArray(ac) ? ac : []);
+      setCampaigns(Array.isArray(camps) ? camps : []);
+      setServerConfig(conf);
+      if (Array.isArray(camps) && camps.length > 0 && !selectedCampaign) setSelectedCampaign(camps[0].id.toString());
     } catch(e) { console.error(e); } 
     finally { setLoading(false); }
   };
@@ -113,6 +117,17 @@ export default function Dashboard() {
   useEffect(() => { fetchData(); }, []);
 
   const handleStartDemo = async () => {
+    if (serverConfig) {
+      if (!serverConfig.twilio_configured) {
+        alert("Twilio credentials not found in .env");
+        return;
+      }
+      if (!serverConfig.ngrok_url || serverConfig.ngrok_url.includes("xxxx") || serverConfig.ngrok_url.includes("your-ngrok-url")) {
+        alert("Please set your NGROK_URL in .env before making live calls");
+        return;
+      }
+    }
+
     try {
       const res = await fetch('http://localhost:8000/api/demo/call', {
         method: 'POST',
@@ -258,7 +273,7 @@ export default function Dashboard() {
                   : 'bg-gradient-to-br from-cyan-900 to-cyan-950 text-white border-l-4 border-cyan-400 rounded-2xl rounded-br-sm'
                 }`}>
                   <span className="block text-[10px] uppercase font-bold tracking-widest text-cyan-500/60 mb-1">
-                    {t.role === 'user' ? 'Customer' : 'Dialora AI'}
+                    {t.role === 'user' ? 'Customer' : 'Nandita'}
                   </span>
                   {t.text}
                 </div>
@@ -282,21 +297,21 @@ export default function Dashboard() {
               <div className="bg-gradient-to-b from-[#0e1730] to-[#111827] border-t-2 border-t-blue-500 border-x border-b border-gray-800/80 p-6 rounded-2xl shadow-lg relative overflow-hidden group hover:border-gray-700 transition-all">
                 <div className="absolute -top-4 -right-4 bg-blue-500/10 p-6 rounded-full group-hover:scale-110 transition-transform"><PhoneOutgoing className="w-8 h-8 text-blue-400" /></div>
                 <p className="text-gray-400 font-medium text-sm mb-1 uppercase tracking-wider relative z-10">Total Calls</p>
-                <div className="text-4xl font-black text-white mb-4 relative z-10"><AnimatedCounter value={stats.total_calls} /></div>
+                <div className="text-4xl font-black text-white mb-4 relative z-10"><AnimatedCounter value={stats?.total_calls || 0} /></div>
                 <svg className="w-full h-8 opacity-40 group-hover:opacity-100 transition-opacity" viewBox="0 0 100 20" preserveAspectRatio="none"><polyline fill="none" stroke="#3b82f6" strokeWidth="2" points="0,20 20,15 40,18 60,8 80,12 100,2" /></svg>
               </div>
               
               <div className="bg-gradient-to-b from-[#0a201c] to-[#111827] border-t-2 border-t-green-500 border-x border-b border-gray-800/80 p-6 rounded-2xl shadow-lg relative overflow-hidden group hover:border-gray-700 transition-all">
                 <div className="absolute -top-4 -right-4 bg-green-500/10 p-6 rounded-full group-hover:scale-110 transition-transform"><Activity className="w-8 h-8 text-green-400" /></div>
                 <p className="text-gray-400 font-medium text-sm mb-1 uppercase tracking-wider relative z-10">Conversion Rate</p>
-                <div className="text-4xl font-black text-transparent bg-gradient-to-r from-green-400 to-[#2ee2a3] bg-clip-text mb-4 relative z-10"><AnimatedCounter value={stats.conversion_rate} />%</div>
+                <div className="text-4xl font-black text-transparent bg-gradient-to-r from-green-400 to-[#2ee2a3] bg-clip-text mb-4 relative z-10"><AnimatedCounter value={stats?.conversion_rate || 0} />%</div>
                 <svg className="w-full h-8 opacity-40 group-hover:opacity-100 transition-opacity" viewBox="0 0 100 20" preserveAspectRatio="none"><polyline fill="none" stroke="#22c55e" strokeWidth="2" points="0,20 20,18 40,12 60,15 80,5 100,2" /></svg>
               </div>
               
               <div className="bg-gradient-to-b from-[#1b1033] to-[#111827] border-t-2 border-t-purple-500 border-x border-b border-gray-800/80 p-6 rounded-2xl shadow-lg relative overflow-hidden group hover:border-gray-700 transition-all">
                 <div className="absolute -top-4 -right-4 bg-purple-500/10 p-6 rounded-full group-hover:scale-110 transition-transform"><Users className="w-8 h-8 text-purple-400" /></div>
                 <p className="text-gray-400 font-medium text-sm mb-1 uppercase tracking-wider relative z-10">Active Campaigns</p>
-                <div className="text-4xl font-black text-white mb-4 relative z-10"><AnimatedCounter value={stats.active_campaigns} /></div>
+                <div className="text-4xl font-black text-white mb-4 relative z-10"><AnimatedCounter value={stats?.active_campaigns || 0} /></div>
                 <svg className="w-full h-8 opacity-40 group-hover:opacity-100 transition-opacity" viewBox="0 0 100 20" preserveAspectRatio="none"><polyline fill="none" stroke="#a855f7" strokeWidth="2" points="0,20 20,10 40,15 60,5 80,10 100,5" /></svg>
               </div>
             </div>
@@ -329,7 +344,7 @@ export default function Dashboard() {
                     </thead>
                     <tbody className="text-sm">
                       {callLogs.slice(0,6).map((log) => (
-                        <tr key={log.id} className="border-b border-gray-800/50 hover:bg-[#1a2333] transition-colors group">
+                        <tr key={log.id} onClick={() => setSelectedLog(log)} className="cursor-pointer border-b border-gray-800/50 hover:bg-[#1a2333] transition-colors group">
                           <td className="py-4 px-4 font-medium text-gray-200">{log.campaign_name}</td>
                           <td className="py-4 px-4">{getIntentBadge(log.intent_tag)}</td>
                           <td className="py-4 px-4">
@@ -341,7 +356,10 @@ export default function Dashboard() {
                             </div>
                           </td>
                           <td className="py-4 px-4 text-gray-400 truncate max-w-[250px]" title={log.summary}>{log.summary}</td>
-                          <td className="py-4 px-4 text-right text-gray-500 text-xs">{timeAgo(log.created_at)}</td>
+                          <td className="py-4 px-4 text-right text-gray-500 text-xs flex items-center justify-end gap-2">
+                            {timeAgo(log.created_at)}
+                            <MessageSquare className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity text-cyan-500" />
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -387,6 +405,63 @@ export default function Dashboard() {
             </div>
           </div>
 
+        </div>
+      )}
+
+      {/* PAST LOG VIEWER MODAL */}
+      {selectedLog && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[100] animate-fade-in p-4">
+           <div className="bg-[#111827] border border-gray-700/80 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col relative overflow-hidden">
+              <button 
+                onClick={() => setSelectedLog(null)} 
+                className="absolute top-4 right-4 text-gray-400 hover:text-white bg-gray-800/50 hover:bg-gray-700 rounded-full p-2 transition-colors z-10"
+              >
+                <X className="w-5 h-5"/>
+              </button>
+              
+              <div className="bg-[#0a0f1e] px-8 py-6 border-b border-gray-800">
+                 <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+                   <PhoneOutgoing className="text-blue-400 w-6 h-6"/> Call Interaction History
+                 </h2>
+                 <div className="flex items-center gap-4 text-sm mt-3">
+                   <div className="text-gray-400"><span className="text-gray-500">Campaign:</span> <span className="font-bold text-gray-200">{selectedLog.campaign_name}</span></div>
+                   <div className="w-1 h-1 bg-gray-700 rounded-full"></div>
+                   <div className="text-gray-400"><span className="text-gray-500">Lead Score:</span> <span className="font-bold text-white">{selectedLog.lead_score}/10</span></div>
+                   <div className="w-1 h-1 bg-gray-700 rounded-full"></div>
+                   <div className="flex items-center gap-2 text-gray-400"><span className="text-gray-500">Status:</span> {getIntentBadge(selectedLog.intent_tag)}</div>
+                 </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-5 bg-gradient-to-b from-[#111827] to-[#0a0f1e] custom-scrollbar">
+                {(!selectedLog.transcript || selectedLog.transcript.length === 0) ? (
+                   <p className="text-gray-500 text-center italic mt-10">No transcript recorded for this session.</p>
+                ) : (
+                  selectedLog.transcript.map((msg: any, i: number) => (
+                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`} style={{ animationDelay: `${i * 0.05}s` }}>
+                      <div className={`max-w-[75%] px-5 py-4 text-sm shadow-lg leading-relaxed ${
+                        msg.role === 'user' 
+                        ? 'bg-gradient-to-br from-[#1a2333] to-[#253147] text-gray-200 border-r-4 border-purple-500 rounded-2xl rounded-tr-sm' 
+                        : 'bg-[#151c2b] text-gray-300 border-l-4 border-cyan-500 rounded-2xl rounded-bl-sm border border-gray-800/50'
+                      }`}>
+                        <span className={`block text-[10px] uppercase font-bold tracking-widest mb-1.5 ${msg.role === 'user' ? 'text-purple-400/80 text-right' : 'text-cyan-500/80'}`}>
+                          {msg.role === 'user' ? 'Customer' : 'Nandita'}
+                        </span>
+                        {msg.content}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              
+              {selectedLog.summary && (
+                <div className="p-5 bg-[#0a0f1e] border-t border-gray-800 mt-auto">
+                  <div className="bg-[#1a2333] border border-gray-700/50 rounded-xl p-4">
+                     <span className="uppercase text-[10px] text-gray-500 font-bold tracking-widest mb-1 block">QA AI Summary</span>
+                     <p className="text-gray-300 text-sm italic">"{selectedLog.summary}"</p>
+                  </div>
+                </div>
+              )}
+           </div>
         </div>
       )}
     </div>

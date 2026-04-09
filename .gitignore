@@ -11,6 +11,10 @@ pip-delete-this-directory.txt
 .env
 dialora.db
 
+# Generated TTS audio files
+backend/static/*.wav
+backend/static/*.mp3
+
 # Frontend
 frontend/node_modules/
 frontend/dist/

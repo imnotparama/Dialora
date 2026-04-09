@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Phone, LayoutDashboard, PlusCircle } from 'lucide-react';
+import { Phone, LayoutDashboard, PlusCircle, Radio } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import CallSimulator from './pages/CallSimulator';
 import Campaign from './pages/Campaign';
+import LiveCallDashboard from './pages/LiveCallDashboard';
 
 export const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
   window.dispatchEvent(new CustomEvent('dialora-toast', { detail: { message, type } }));
@@ -100,6 +101,7 @@ function AppContent() {
             <NavLink to="/" icon={LayoutDashboard}>Dashboard</NavLink>
             <NavLink to="/campaigns/new" icon={PlusCircle}>New Campaign</NavLink>
             <NavLink to="/simulate" icon={Phone}>Simulate Call</NavLink>
+            <NavLink to="/live" icon={Radio}>Live Monitor</NavLink>
           </nav>
         </div>
         
@@ -127,6 +129,7 @@ function AppContent() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/campaigns/new" element={<Campaign />} />
           <Route path="/simulate" element={<CallSimulator />} />
+          <Route path="/live" element={<LiveCallDashboard />} />
         </Routes>
       </main>
     </div>
