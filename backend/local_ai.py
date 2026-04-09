@@ -3,9 +3,6 @@ import json
 import re
 
 # ─── Keyword-based intent grounding ──────────────────────────────────────────
-# These lists check what the USER actually said, not just what the LLM guesses.
-# The LLM's classification is used only as a tiebreaker when no strong signal exists.
-
 _NOT_INTERESTED_SIGNALS = [
     "not interested", "no thanks", "no thank you", "don't call", "do not call",
     "remove me", "take me off", "stop calling", "busy", "not now", "bad time",
@@ -19,7 +16,7 @@ _CALLBACK_SIGNALS = [
     "call me later", "call back", "callback", "try again", "another time",
     "not right now", "in a meeting", "call tomorrow", "call next week",
     "reach me later", "ping me later", "send an email", "send me details",
-    "send me info", "WhatsApp me", "text me"
+    "send me info", "whatsapp me", "text me"
 ]
 
 _INTERESTED_SIGNALS = [
@@ -32,54 +29,111 @@ _INTERESTED_SIGNALS = [
 
 def _classify_intent_from_user(user_text: str) -> str | None:
     """
-    Returns a definitive intent if user's text contains strong keyword signals.
-    Returns None if the text is ambiguous (defer to LLM).
+    Returns a definitive intent if user's text has strong keyword signals.
+    Returns None if ambiguous — defer to LLM result.
     Priority: Not Interested > Callback > Interested
     """
     lower = user_text.lower()
-
     for phrase in _NOT_INTERESTED_SIGNALS:
         if phrase in lower:
             return "Not Interested"
-
     for phrase in _CALLBACK_SIGNALS:
         if phrase in lower:
             return "Callback"
-
     for phrase in _INTERESTED_SIGNALS:
         if phrase in lower:
             return "Interested"
-
-    return None  # ambiguous — use LLM result
+    return None
 
 
 def _clean_reply(text: str) -> str:
-    """
-    Strips any leaked 'Intent: X' lines or trailing intent text from the reply.
-    """
-    # Remove full lines starting with Intent:
-    lines = [l for l in text.split('\n') if not re.match(r'^\s*intent\s*:', l, re.IGNORECASE)]
+    """Strips Emotion:/Intent: lines and any inline [TAG:X] markers from spoken reply."""
+    lines = [
+        l for l in text.split('\n')
+        if not re.match(r'^\s*(intent|emotion)\s*:', l, re.IGNORECASE)
+    ]
     cleaned = '\n'.join(lines).strip()
-    # Also strip trailing inline intent patterns like ". Intent: Interested"
+    cleaned = re.sub(r'\[EMOTION:.*?\]', '', cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r'\[INTENT:.*?\]', '', cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r'\.\s*Intent\s*:\s*\S+\s*$', '.', cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r'\s*Intent\s*:\s*\S+\s*$', '', cleaned, flags=re.IGNORECASE).strip()
-    return cleaned
+    return cleaned.strip()
 
 
-# ─── System prompt ────────────────────────────────────────────────────────────
+def _normalise_intent(raw: str) -> str:
+    lower = raw.lower()
+    if "not interested" in lower or "not_interested" in lower:
+        return "Not Interested"
+    if "interested" in lower:
+        return "Interested"
+    if "callback" in lower:
+        return "Callback"
+    if "objection" in lower:
+        return "Objection"
+    return "Neutral"
 
-def get_system_prompt(business_context: str = None, script: str = None, knowledge_base: str = None) -> str:
+
+def _normalise_emotion(raw: str) -> str:
+    VALID = {
+        "ANGRY", "FRUSTRATED", "EXCITED", "INTERESTED",
+        "CONFUSED", "HESITANT", "DISINTERESTED", "SAD", "NEUTRAL", "HAPPY"
+    }
+    upper = raw.strip().upper()
+    for v in VALID:
+        if v in upper:
+            return v
+    return "NEUTRAL"
+
+
+# ─── Emotional intelligence system prompts ────────────────────────────────────
+
+_EMOTION_RULES = """
+CRITICAL ROLEPLAY INSTRUCTIONS:
+- You are CURRENTLY on a LIVE voice call with a human prospect.
+- NEVER break character. NEVER mention you are an AI. 
+- NEVER offer to "help write a script" or "come up with ideas". 
+- Respond directly to what the user says as if you are the person making the sales call.
+- Start speaking immediately in character.
+
+EMOTIONAL DETECTION & RESPONSE RULES:
+Silently detect the caller's emotion from: ANGRY, FRUSTRATED, EXCITED, INTERESTED,
+CONFUSED, HESITANT, DISINTERESTED, SAD, NEUTRAL, HAPPY
+
+Then adapt your response style accordingly:
+- ANGRY/FRUSTRATED → Immediately apologize, lower energy, de-escalate. 
+  Do NOT pitch. Say: "I completely understand, I'm so sorry to interrupt your time."
+- EXCITED/INTERESTED → Match their energy! Be enthusiastic. Move toward the close.
+  "That's great to hear! Can I ask — when would be a good time to..."
+- CONFUSED → Slow down. Use simpler words. One piece of info at a time.
+  "Let me explain that more simply..."
+- HESITANT → Identify their specific objection and address it directly.
+  "It sounds like you might have concerns about X — can I address that?"
+- DISINTERESTED/SAD → Be empathetic. Don't push. Offer an alternative.
+  "I completely understand. Would it be okay if I sent you some info instead?"
+- NEUTRAL/HAPPY → Engage warmly. Ask an open question to draw them in.
+
+CONVERSATION RULES:
+1. Keep responses under 3 sentences maximum
+2. Speak exactly the words you want to say out loud to the customer.
+3. Always end with either a question OR a clear next step
+4. Never repeat the same phrase twice in a conversation
+5. If user says "not interested" twice → gracefully end the call:
+   "Absolutely, I respect that completely. Have a wonderful day!" then output [END_CALL]
+6. If user asks to call back → confirm and output [CALLBACK]
+"""
+
+
+def get_streaming_system_prompt(business_context=None, script=None, knowledge_base=None) -> str:
+    """
+    Streaming prompt — emotion + intent embedded as tags at END of reply:
+    <reply text> [EMOTION:X][INTENT:Y]
+    """
     base = (
-        "You are Nandita, a warm and professional female tele-calling sales agent on a live phone call. "
-        "Speak naturally, confidently, and conversationally — like a real person, not a robot.\n\n"
-        "CRITICAL RULES:\n"
-        "- KEEP IT EXTREMELY SHORT. Speak only 1 to 2 short sentences per response.\n"
-        "- Do NOT list all details at once. Give one hook, then ask a question.\n"
-        "- People get bored and hang up if you talk too much. Be highly conversational.\n"
-        "- Handle objections calmly and with warmth.\n"
-        "- Never break character. You are Nandita.\n"
+        "You are Nandita, an emotionally intelligent female tele-calling sales agent on a live phone call. "
+        "You mirror the caller's energy level and adapt your tone to their emotional state. "
+        "You are warm, natural, and human-like — never robotic.\n\n"
+        + _EMOTION_RULES
     )
-
     if business_context or script or knowledge_base:
         base += "\n--- CAMPAIGN CONTEXT ---\n"
         if business_context:
@@ -91,29 +145,148 @@ def get_system_prompt(business_context: str = None, script: str = None, knowledg
         base += "\n"
 
     base += (
-        "After your reply, on a SEPARATE NEW LINE, classify the customer's intent based only on what they said:\n"
-        "- Use 'Interested' ONLY if the customer asked for more info, pricing, or said yes.\n"
-        "- Use 'Not Interested' if they said no, bye, not now, or rejected the offer.\n"
-        "- Use 'Callback' if they asked to be called back or said they're busy.\n"
-        "- Use 'Neutral' if the customer gave a generic greeting or unclear response.\n\n"
-        "STRICT OUTPUT FORMAT (never deviate):\n"
-        "Reply: <your spoken response only, no intent here>\n"
-        "Intent: <Interested|Not Interested|Callback|Neutral>"
+        "OUTPUT FORMAT — strictly append BOTH tags at the very end of your spoken reply:\n"
+        "[EMOTION:X][INTENT:Y]\n\n"
+        "Where X is one of: ANGRY, FRUSTRATED, EXCITED, INTERESTED, CONFUSED, "
+        "HESITANT, DISINTERESTED, SAD, NEUTRAL, HAPPY\n"
+        "And Y is one of: INTERESTED, NOT_INTERESTED, CALLBACK, NEUTRAL, OBJECTION\n\n"
+        "Example:\n"
+        "I completely understand! Could I ask — what specifically caught your interest? "
+        "[EMOTION:INTERESTED][INTENT:INTERESTED]\n\n"
+        "IMPORTANT: Tags must be at the very end. Never put them in the middle of your reply."
     )
     return base
 
 
-# ─── Main AI response ─────────────────────────────────────────────────────────
+def get_system_prompt(business_context=None, script=None, knowledge_base=None) -> str:
+    """
+    Non-streaming prompt (Twilio path) — structured Emotion:/Reply:/Intent: format.
+    """
+    base = (
+        "You are Nandita, an emotionally intelligent female tele-calling sales agent on a live phone call. "
+        "You mirror the caller's energy level and adapt your tone to their emotional state. "
+        "You are warm, natural, and human-like — never robotic.\n\n"
+        + _EMOTION_RULES
+    )
+    if business_context or script or knowledge_base:
+        base += "\n--- CAMPAIGN CONTEXT ---\n"
+        if business_context:
+            base += f"Business Context: {business_context}\n"
+        if script:
+            base += f"Agent Script / Goal: {script}\n"
+        if knowledge_base:
+            base += f"Knowledge Base / FAQs: {knowledge_base}\n"
+        base += "\n"
+
+    base += (
+        "STRICT OUTPUT FORMAT — use exactly these three lines in order:\n"
+        "Emotion: <detected caller emotion>\n"
+        "Reply: <your 1-3 sentence spoken response only — no tags here>\n"
+        "Intent: <INTERESTED|NOT_INTERESTED|CALLBACK|NEUTRAL|OBJECTION>\n\n"
+        "Example:\n"
+        "Emotion: FRUSTRATED\n"
+        "Reply: I completely understand and I sincerely apologize for interrupting. "
+        "Could I take just 30 seconds, or would you prefer I call back at a better time?\n"
+        "Intent: NEUTRAL"
+    )
+    return base
+
+
+# ─── Streaming AI response ────────────────────────────────────────────────────
+
+def get_ai_response_streaming(
+    prompt: str,
+    context: list,
+    business_context=None,
+    script=None,
+    knowledge_base=None
+):
+    """
+    Generator streaming sentences from Ollama in real-time.
+    Yields:
+      {"type": "sentence", "text": str}
+      {"type": "intent",   "intent": str, "emotion": str, "full_reply": str}
+      {"type": "error",    "error": str}
+    """
+    url = "http://localhost:11434/api/chat"
+    system_prompt = get_streaming_system_prompt(business_context, script, knowledge_base)
+    messages = [{"role": "system", "content": system_prompt}] + context + [{"role": "user", "content": prompt}]
+
+    payload = {
+        "model": "llama3.2",
+        "messages": messages,
+        "stream": True,
+        "temperature": 0.7
+    }
+
+    try:
+        response = requests.post(url, json=payload, stream=True, timeout=30)
+        full_reply = ""
+        sentence_buffer = ""
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            try:
+                chunk_data = json.loads(line)
+            except Exception:
+                continue
+
+            token = chunk_data.get("message", {}).get("content", "")
+            if not token:
+                if chunk_data.get("done"):
+                    break
+                continue
+
+            full_reply += token
+            sentence_buffer += token
+
+            # Yield complete sentences the moment they form
+            if any(p in sentence_buffer for p in ['. ', '! ', '? ', '.\n', '!\n', '?\n']):
+                parts = re.split(r'(?<=[.!?])\s+', sentence_buffer)
+                for sentence in parts[:-1]:
+                    # Strip [EMOTION:X][INTENT:Y] tags from spoken text
+                    clean = re.sub(r'\[(EMOTION|INTENT):.*?\]', '', sentence, flags=re.IGNORECASE).strip()
+                    if clean and len(clean) > 3:
+                        yield {"type": "sentence", "text": clean}
+                sentence_buffer = parts[-1]
+
+        # Yield remaining buffer
+        if sentence_buffer.strip():
+            clean = re.sub(r'\[(EMOTION|INTENT):.*?\]', '', sentence_buffer, flags=re.IGNORECASE).strip()
+            if clean and len(clean) > 3:
+                yield {"type": "sentence", "text": clean}
+
+        # Extract emotion + intent from full reply tags
+        emotion_match = re.search(r'\[EMOTION:(.*?)\]', full_reply, re.IGNORECASE)
+        intent_match = re.search(r'\[INTENT:(.*?)\]', full_reply, re.IGNORECASE)
+
+        raw_emotion = emotion_match.group(1).strip() if emotion_match else "NEUTRAL"
+        raw_intent = intent_match.group(1).strip() if intent_match else "NEUTRAL"
+
+        clean_emotion = _normalise_emotion(raw_emotion)
+        clean_intent = _normalise_intent(raw_intent)
+
+        yield {"type": "intent", "intent": clean_intent, "emotion": clean_emotion, "full_reply": full_reply}
+
+    except requests.exceptions.ConnectionError:
+        yield {"type": "error", "error": "OLLAMA_OFFLINE"}
+    except requests.exceptions.Timeout:
+        yield {"type": "error", "error": "OLLAMA_TIMEOUT"}
+    except Exception as e:
+        yield {"type": "error", "error": str(e)}
+
+
+# ─── Non-streaming AI response (Twilio path) ─────────────────────────────────
 
 def generate_ai_response(
     prompt: str,
     context: list,
-    business_context: str = None,
-    script: str = None,
-    knowledge_base: str = None
+    business_context=None,
+    script=None,
+    knowledge_base=None
 ) -> dict:
     url = "http://localhost:11434/api/chat"
-
     system_prompt = get_system_prompt(business_context, script, knowledge_base)
     messages = [{"role": "system", "content": system_prompt}] + context + [{"role": "user", "content": prompt}]
 
@@ -123,72 +296,62 @@ def generate_ai_response(
         "stream": False,
         "temperature": 0.7
     }
-
     try:
         response = requests.post(url, json=payload, timeout=30)
-
         if response.status_code == 200:
             response_text = response.json().get('message', {}).get('content', '')
             raw_reply = response_text
-            llm_intent = "Neutral"
+            raw_intent = "NEUTRAL"
+            raw_emotion = "NEUTRAL"
 
-            # Parse Reply: and Intent: lines
-            lines = [line.strip() for line in response_text.split('\n') if line.strip()]
-            for line in lines:
-                if line.lower().startswith("reply:"):
-                    raw_reply = line[6:].strip()
-                elif line.lower().startswith("intent:"):
-                    llm_intent = line[7:].strip()
+            # Parse structured Emotion:/Reply:/Intent: format
+            emotion_match = re.search(r'Emotion:\s*(.+)', response_text, re.IGNORECASE)
+            reply_match = re.search(r'Reply:\s*(.+?)(?=Intent:|$)', response_text, re.DOTALL | re.IGNORECASE)
+            intent_match = re.search(r'Intent:\s*(.+)', response_text, re.IGNORECASE)
 
-            # Clean any leaked "Intent: X" from the spoken reply
+            if emotion_match:
+                raw_emotion = emotion_match.group(1).strip()
+            if reply_match:
+                raw_reply = reply_match.group(1).strip()
+            if intent_match:
+                raw_intent = intent_match.group(1).strip()
+
             clean_reply_text = _clean_reply(raw_reply)
+            clean_intent = _normalise_intent(raw_intent)
+            clean_emotion = _normalise_emotion(raw_emotion)
 
-            # Normalise LLM intent
-            intent_map = {
-                "interested": "Interested",
-                "not interested": "Not Interested",
-                "callback": "Callback",
-                "neutral": "Neutral"
-            }
-            llm_clean = next(
-                (val for key, val in intent_map.items() if key in llm_intent.lower()),
-                "Neutral"
-            )
-
-            # ── Override with keyword-based grounding from USER's actual words ──
-            # This prevents the LLM from always returning "Interested" regardless.
+            # Keyword grounding overrides LLM intent when strong signal present
             keyword_intent = _classify_intent_from_user(prompt)
-            final_intent = keyword_intent if keyword_intent is not None else llm_clean
+            final_intent = keyword_intent if keyword_intent is not None else clean_intent
 
             return {
                 "reply": clean_reply_text,
                 "intent": final_intent,
+                "emotion": clean_emotion,
                 "raw": response_text,
                 "error": None
             }
         else:
-            return {"reply": "Ollama connection failed", "intent": "Error", "raw": response.text, "error": "AI_ERROR"}
+            return {"reply": "Ollama connection failed", "intent": "Error", "emotion": "NEUTRAL", "raw": response.text, "error": "AI_ERROR"}
 
     except requests.exceptions.ConnectionError:
-        return {"reply": None, "intent": "Neutral", "error": "OLLAMA_OFFLINE"}
+        return {"reply": None, "intent": "Neutral", "emotion": "NEUTRAL", "error": "OLLAMA_OFFLINE"}
     except requests.exceptions.Timeout:
-        return {"reply": None, "intent": "Neutral", "error": "OLLAMA_TIMEOUT"}
+        return {"reply": None, "intent": "Neutral", "emotion": "NEUTRAL", "error": "OLLAMA_TIMEOUT"}
     except Exception as e:
-        return {"reply": None, "intent": "Neutral", "error": f"AI_ERROR: {str(e)}"}
+        return {"reply": None, "intent": "Neutral", "emotion": "NEUTRAL", "error": f"AI_ERROR: {str(e)}"}
 
 
 # ─── End-of-call QA scoring ───────────────────────────────────────────────────
 
 def score_call(transcript: list) -> dict:
     """
-    Evaluates transcript, outputs JSON {"summary": "...", "lead_score": X, "final_intent": "..."}
-    transcript format: [{"role": "...", "content": "..."}, ...]
+    Evaluates full transcript. Returns {"summary", "lead_score", "final_intent"}.
     """
     url = "http://localhost:11434/api/chat"
-
     sys_prompt = (
         "You are a QA Analyst reviewing a tele-call transcript conducted by Nandita, an AI sales agent. "
-        "Analyze the following conversation from the CUSTOMER's perspective and return:\n"
+        "Analyze the conversation from the CUSTOMER's perspective and return:\n"
         "- summary: 1-2 sentence description of how the call went\n"
         "- lead_score: integer 0-10 (0=hostile/hung up, 5=neutral, 10=ready to buy)\n"
         "- final_intent: MUST be exactly one of: 'Interested', 'Not Interested', 'Neutral'\n\n"
@@ -200,12 +363,10 @@ def score_call(transcript: list) -> dict:
         "Output ONLY a pure JSON object, no markdown:\n"
         "{\"summary\": \"...\", \"lead_score\": 5, \"final_intent\": \"Neutral\"}"
     )
-
     tx_str = "\n".join([
         f"{msg.get('role', '').upper()}: {msg.get('content', '')}"
         for msg in transcript
     ])
-
     payload = {
         "model": "llama3.2",
         "messages": [
@@ -215,7 +376,6 @@ def score_call(transcript: list) -> dict:
         "stream": False,
         "temperature": 0.1
     }
-
     try:
         response = requests.post(url, json=payload, timeout=60)
         if response.status_code == 200:

@@ -5,6 +5,8 @@ import csv
 from io import StringIO
 from typing import Optional, List
 import requests
+import asyncio
+import threading
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -390,6 +392,101 @@ async def simulate_turn(
         "audio_url": f"http://localhost:8000/static/{os.path.basename(audio_path)}" if audio_path else ""
     }
 
+
+@app.post("/api/simulate/turn/stream")
+async def simulate_turn_stream(
+    session_id: str = Form(...),
+    user_text: str = Form(...),
+    campaign_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """SSE endpoint — streams Nandita's response sentence-by-sentence with TTS audio."""
+    if not user_text:
+        return {"error": "No text provided"}
+
+    if session_id not in sim_contexts:
+        sim_contexts[session_id] = []
+    context = sim_contexts[session_id]
+
+    camp_ctx = camp_script = camp_kb = None
+    if campaign_id:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if campaign:
+            camp_ctx = campaign.business_context
+            camp_script = campaign.script
+            camp_kb = campaign.knowledge_base
+
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def run_streaming():
+        try:
+            for chunk in local_ai.get_ai_response_streaming(
+                prompt=user_text,
+                context=list(context),  # snapshot to avoid race conditions
+                business_context=camp_ctx,
+                script=camp_script,
+                knowledge_base=camp_kb
+            ):
+                if chunk["type"] == "sentence":
+                    audio_file = local_audio.generate_tts(chunk["text"])
+                    chunk["audio_url"] = f"http://localhost:8000/static/{audio_file}" if audio_file else ""
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "error": str(e)})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+    threading.Thread(target=run_streaming, daemon=True).start()
+
+    async def event_generator():
+        full_reply = ""
+        try:
+            while True:
+                chunk = await asyncio.wait_for(queue.get(), timeout=45.0)
+                if chunk is None:
+                    break
+
+                if chunk["type"] == "sentence":
+                    full_reply += chunk["text"] + " "
+                    yield f"data: {json.dumps({'type': 'sentence', 'text': chunk['text'], 'audio_url': chunk.get('audio_url', '')})}\n\n"
+
+                elif chunk["type"] == "intent":
+                    # Apply keyword grounding on top of LLM classification
+                    keyword_intent = local_ai._classify_intent_from_user(user_text)
+                    final_intent = keyword_intent if keyword_intent else chunk["intent"]
+                    final_emotion = chunk.get("emotion", "NEUTRAL")
+
+                    # Persist turn to session context
+                    context.append({"role": "user", "content": user_text})
+                    context.append({"role": "assistant", "content": full_reply.strip()})
+
+                    yield f"data: {json.dumps({'type': 'done', 'intent': final_intent, 'emotion': final_emotion, 'full_reply': full_reply.strip()})}\n\n"
+
+                elif chunk["type"] == "error":
+                    err = chunk["error"]
+                    if "OLLAMA_OFFLINE" in err:
+                        detail = {"error": "OLLAMA_OFFLINE", "message": "Ollama is not running. Please start it with: ollama serve"}
+                    elif "OLLAMA_TIMEOUT" in err:
+                        detail = {"error": "OLLAMA_TIMEOUT", "message": "Ollama timed out. The model may still be loading."}
+                    else:
+                        detail = {"error": "AI_ERROR", "message": "AI encountered an error. Check backend logs."}
+                    yield f"data: {json.dumps({'type': 'error', **detail})}\n\n"
+                    break
+
+        except asyncio.TimeoutError:
+            yield f"data: {json.dumps({'type': 'error', 'error': 'TIMEOUT', 'message': 'AI response timed out after 45 seconds.'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive"
+        }
+    )
+
 @app.websocket("/ws/calls")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -412,10 +509,18 @@ async def twilio_voice(request: Request, campaign_id: str = "", db: Session = De
         
     form = await request.form()
     call_sid = form.get("CallSid", "unknown")
+    
+    # Resolve campaign KB so the AI has full context on the live call
+    camp_ctx = campaign.business_context if campaign_id and campaign else context
+    camp_script = campaign.script if campaign_id and campaign else None
+    camp_kb = campaign.knowledge_base if campaign_id and campaign else None
+
     twilio_sessions[call_sid] = {
         "messages": [],
         "campaign_id": campaign_id,
-        "context": context
+        "context": camp_ctx,
+        "script": camp_script,
+        "knowledge_base": camp_kb
     }
     
     greeting = f"Hello! My name is Nandita, and I'm calling on behalf of Dialora. {context}. Is this a good time to talk?"
@@ -436,7 +541,7 @@ async def twilio_voice(request: Request, campaign_id: str = "", db: Session = De
     gather = Gather(
         input="speech",
         action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
-        speech_timeout="auto",
+        speech_timeout=1,
         language="en-IN"
     )
     response.append(gather)
@@ -452,7 +557,7 @@ async def twilio_gather(request: Request, call_sid: str = ""):
             response = VoiceResponse()
             ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
             response.say("Sorry, I didn't catch that. Could you say that again?", voice="Polly.Aditi")
-            gather = Gather(input="speech", action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}", speech_timeout="auto", language="en-IN")
+            gather = Gather(input="speech", action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}", speech_timeout=1, language="en-IN")
             response.append(gather)
             return Response(content=str(response), media_type="application/xml")
         
@@ -466,10 +571,17 @@ async def twilio_gather(request: Request, call_sid: str = ""):
         
         session["messages"].append({"role": "user", "content": user_text})
         
-        # Call the LLM — guard against None reply
-        result = local_ai.generate_ai_response(user_text, session["messages"], session["context"])
+        # Call the LLM with correct keyword args
+        result = local_ai.generate_ai_response(
+            prompt=user_text,
+            context=session["messages"][:-1],  # exclude the just-appended user message
+            business_context=session.get("context"),
+            script=session.get("script"),
+            knowledge_base=session.get("knowledge_base")
+        )
         reply = result.get("reply") or "Let me think about that for a moment. Could you tell me more?"
         intent = result.get("intent", "Neutral")
+        emotion = result.get("emotion", "NEUTRAL")
         
         session["messages"].append({"role": "assistant", "content": reply})
         
@@ -477,7 +589,8 @@ async def twilio_gather(request: Request, call_sid: str = ""):
             "type": "ai_replied",
             "call_sid": call_sid,
             "text": reply,
-            "intent": intent
+            "intent": intent,
+            "emotion": emotion
         })
         
         response = VoiceResponse()
@@ -494,7 +607,7 @@ async def twilio_gather(request: Request, call_sid: str = ""):
         gather = Gather(
             input="speech",
             action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
-            speech_timeout="auto",
+            speech_timeout=1,
             language="en-IN"
         )
         response.append(gather)
@@ -526,7 +639,11 @@ async def twilio_status(request: Request):
 @app.post("/api/demo/call")
 async def trigger_demo_call(data: dict):
     campaign_id = data.get("campaign_id", "")
-    call_sid = twilio_calls.make_demo_call(campaign_id)
-    if call_sid == "twilio_not_configured":
-        raise HTTPException(status_code=400, detail="Twilio is not configured in .env variables")
-    return {"call_sid": call_sid, "status": "dialing"}
+    result = twilio_calls.make_demo_call(campaign_id)
+    if result == "twilio_not_configured":
+        raise HTTPException(status_code=400, detail="Twilio is not configured. Add credentials to backend/.env")
+    if result == "missing_config":
+        raise HTTPException(status_code=400, detail="DEMO_PHONE_NUMBER or NGROK_URL missing from .env")
+    if str(result).startswith("error:"):
+        raise HTTPException(status_code=500, detail=f"Twilio error: {result[6:]}")
+    return {"call_sid": result, "status": "dialing"}

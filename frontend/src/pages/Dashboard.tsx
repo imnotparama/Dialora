@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone, X, Mic, MessageSquare } from 'lucide-react';
+import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone, X, Mic, MessageSquare, AlertTriangle, CheckCircle, Copy } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { showToast } from '../App';
 
 function AnimatedCounter({ value }: { value: number | string }) {
   const [count, setCount] = useState(0);
@@ -117,17 +118,14 @@ export default function Dashboard() {
   useEffect(() => { fetchData(); }, []);
 
   const handleStartDemo = async () => {
-    if (serverConfig) {
-      if (!serverConfig.twilio_configured) {
-        alert("Twilio credentials not found in .env");
-        return;
-      }
-      if (!serverConfig.ngrok_url || serverConfig.ngrok_url.includes("xxxx") || serverConfig.ngrok_url.includes("your-ngrok-url")) {
-        alert("Please set your NGROK_URL in .env before making live calls");
-        return;
-      }
+    if (serverConfig && !serverConfig.twilio_configured) {
+      showToast('Twilio is not configured. Please set credentials in backend/.env first.', 'error');
+      return;
     }
-
+    if (serverConfig && (!serverConfig.ngrok_url || serverConfig.ngrok_url.includes('xxxx'))) {
+      showToast('Please set a valid NGROK_URL in backend/.env before making live calls.', 'error');
+      return;
+    }
     try {
       const res = await fetch('http://localhost:8000/api/demo/call', {
         method: 'POST',
@@ -136,10 +134,12 @@ export default function Dashboard() {
       });
       if (!res.ok) {
         const err = await res.json();
-        alert("Failed to start call: " + err.detail);
+        showToast('Failed to start call: ' + (err.detail || 'Unknown error'), 'error');
+      } else {
+        showToast('📞 Dialing now! Watch the Live Call Monitor.', 'success');
       }
     } catch (e) {
-      alert("Network err");
+      showToast('Network error — is the backend running?', 'error');
     }
     setShowDemoModal(false);
   };
@@ -213,25 +213,81 @@ export default function Dashboard() {
 
       {/* Demo Modal */}
       {showDemoModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in custom-scrollbar">
-          <div className="bg-[#111827] border border-gray-700 p-8 rounded-2xl shadow-2xl max-w-md w-full relative">
-            <button onClick={() => setShowDemoModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-white"><X className="w-5 h-5"/></button>
-            <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2"><Phone className="text-red-400"/> Dispatch Live Call</h2>
-            <p className="text-sm text-gray-400 mb-6">This will dial out via Twilio immediately. Ensure your phone is ready.</p>
-            
-            <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">Link Campaign Context</label>
-            <select 
-              value={selectedCampaign}
-              onChange={(e) => setSelectedCampaign(e.target.value)}
-              className="w-full bg-[#1a2333] border border-gray-700 rounded-xl px-4 py-3 text-white mb-6 focus:border-dialora-indigo focus:ring-1 focus:ring-dialora-indigo outline-none"
-            >
-              <option value="">- Generic Sales Profile -</option>
-              {campaigns.map(c => <option key={c.id} value={c.id.toString()}>{c.name}</option>)}
-            </select>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in p-4">
+          <div className="bg-[#111827] border border-gray-700 p-8 rounded-2xl shadow-2xl max-w-lg w-full relative">
+            <button onClick={() => setShowDemoModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"><X className="w-5 h-5"/></button>
+            <h2 className="text-2xl font-bold text-white mb-1 flex items-center gap-2"><Phone className="text-red-400 w-6 h-6"/> Dispatch Live Call</h2>
+            <p className="text-sm text-gray-400 mb-6">Dial out via Twilio to a real phone. Requires Twilio credentials + Ngrok.</p>
 
-            <button onClick={handleStartDemo} className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl transition-colors shadow-lg">
-              Dial Twilio Target Now
-            </button>
+            {/* Twilio NOT configured — show setup guide */}
+            {serverConfig && !serverConfig.twilio_configured ? (
+              <div className="space-y-4">
+                <div className="flex items-start gap-3 bg-amber-900/20 border border-amber-500/40 rounded-xl p-4">
+                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-amber-300 font-bold text-sm">Twilio credentials not configured</p>
+                    <p className="text-amber-400/80 text-xs mt-1">Add these 5 keys to <code className="bg-black/40 px-1 rounded font-mono">backend/.env</code> to enable live calling:</p>
+                  </div>
+                </div>
+
+                <div className="bg-[#0a0f1e] border border-gray-700/60 rounded-xl p-4 font-mono text-xs text-gray-300 space-y-1.5 leading-relaxed">
+                  <p><span className="text-cyan-400">TWILIO_ACCOUNT_SID</span>=<span className="text-green-400">ACxxxxxxxxxxxxxxxxxxxxxxxxxxxx</span></p>
+                  <p><span className="text-cyan-400">TWILIO_AUTH_TOKEN</span>=<span className="text-green-400">your_auth_token</span></p>
+                  <p><span className="text-cyan-400">TWILIO_PHONE_NUMBER</span>=<span className="text-green-400">+1xxxxxxxxxx</span></p>
+                  <p><span className="text-cyan-400">DEMO_PHONE_NUMBER</span>=<span className="text-green-400">+91xxxxxxxxxx</span></p>
+                  <p><span className="text-cyan-400">NGROK_URL</span>=<span className="text-green-400">https://xxxx.ngrok-free.app</span></p>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">Quick setup steps:</p>
+                  {[
+                    ['1', 'Sign up free at', 'twilio.com', 'https://twilio.com'],
+                    ['2', 'Get a Twilio phone number (trial is free)'],
+                    ['3', 'Run', 'ngrok http 8000', null],
+                    ['4', 'Paste all values into backend/.env and restart server'],
+                  ].map(([num, text, link, href]: any, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs text-gray-400">
+                      <span className="w-5 h-5 rounded-full bg-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300 shrink-0">{num}</span>
+                      <span>{text} {link && (href ? <a href={href} target="_blank" className="text-cyan-400 hover:underline">{link}</a> : <code className="bg-black/40 px-1 rounded font-mono text-cyan-400">{link}</code>)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setShowDemoModal(false)} className="flex-1 bg-[#1a2333] hover:bg-[#253147] border border-gray-700 text-gray-300 font-bold py-2.5 rounded-xl transition-all text-sm">
+                    Close
+                  </button>
+                  <button onClick={() => { fetchData(); }} className="flex-1 bg-dialora-indigo/30 hover:bg-dialora-indigo/50 border border-dialora-indigo/50 text-purple-300 font-bold py-2.5 rounded-xl transition-all text-sm">
+                    Re-check Config
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Twilio IS configured — show dial UI */
+              <div>
+                <div className="flex items-center gap-2 bg-green-900/20 border border-green-500/30 rounded-xl px-4 py-2.5 mb-6">
+                  <CheckCircle className="w-4 h-4 text-green-400" />
+                  <span className="text-green-300 text-sm font-medium">Twilio configured — ready to dial</span>
+                  {serverConfig?.ngrok_url && (
+                    <span className="ml-auto text-green-400/60 text-xs font-mono truncate max-w-[180px]">{serverConfig.ngrok_url}</span>
+                  )}
+                </div>
+
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">Link Campaign Context</label>
+                <select
+                  value={selectedCampaign}
+                  onChange={(e) => setSelectedCampaign(e.target.value)}
+                  className="w-full bg-[#1a2333] border border-gray-700 rounded-xl px-4 py-3 text-white mb-6 focus:border-dialora-indigo outline-none"
+                >
+                  <option value="">- Generic Sales Profile -</option>
+                  {campaigns.map(c => <option key={c.id} value={c.id.toString()}>{c.name}</option>)}
+                </select>
+
+                <button onClick={handleStartDemo} className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl transition-colors shadow-lg flex items-center justify-center gap-2">
+                  <Phone className="w-4 h-4 fill-current" /> Dial Twilio Target Now
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
