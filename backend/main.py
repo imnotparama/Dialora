@@ -6,18 +6,34 @@ from io import StringIO
 from typing import Optional, List
 import requests
 
-from fastapi import FastAPI, Form, File, UploadFile, Depends, HTTPException
+from fastapi import FastAPI, Form, File, UploadFile, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
+from sqlalchemy.orm.exc import NoResultFound
+
+from twilio.twiml.voice_response import VoiceResponse, Gather
 
 from database import engine, Base, get_db
 from models import Campaign, Contact, CallLog
 import local_ai
 import local_audio
+import twilio_calls
+
+connected_websockets = set()
+twilio_sessions = {}
+
+async def broadcast_ws(data: dict):
+    dead = set()
+    for ws in connected_websockets:
+        try:
+            await ws.send_json(data)
+        except:
+            dead.add(ws)
+    connected_websockets -= dead
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -214,7 +230,7 @@ def end_simulate(data: SimulateEndRequest, db: Session = Depends(get_db)):
         campaign_id=data.campaign_id,
         contact_id=None,
         transcript=json.dumps(data.transcript),
-        intent_tag=data.final_intent,
+        intent_tag=score_result.get("final_intent", data.final_intent),
         lead_score=score_result.get("lead_score", 0),
         summary=score_result.get("summary", "")
     )
@@ -339,3 +355,141 @@ async def simulate_turn(
         "intent": ai_res['intent'],
         "audio_url": f"http://localhost:8000/static/{os.path.basename(audio_path)}" if audio_path else ""
     }
+
+@app.websocket("/ws/calls")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    connected_websockets.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        connected_websockets.discard(websocket)
+    except:
+        connected_websockets.discard(websocket)
+
+@app.post("/twilio/voice")
+async def twilio_voice(request: Request, campaign_id: str = ""):
+    db = next(get_db())
+    if campaign_id:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        context = campaign.business_context if campaign else "AI tele-calling agent"
+    else:
+        context = "AI tele-calling agent"
+        
+    form = await request.form()
+    call_sid = form.get("CallSid", "unknown")
+    twilio_sessions[call_sid] = {
+        "messages": [],
+        "campaign_id": campaign_id,
+        "context": context
+    }
+    
+    greeting = f"Hello! I'm calling from Dialora. {context}. Is this a good time to talk?"
+    audio_path = local_audio.generate_tts(greeting)
+    audio_file = os.path.basename(audio_path)
+    
+    await broadcast_ws({
+        "type": "call_started",
+        "call_sid": call_sid,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.name if campaign_id and campaign else "Demo Mode"
+    })
+    
+    response = VoiceResponse()
+    ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
+    response.play(f"{ngrok_url}/static/{audio_file}")
+    gather = Gather(
+        input="speech",
+        action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
+        speech_timeout="auto",
+        language="en-IN"
+    )
+    response.append(gather)
+    return Response(content=str(response), media_type="application/xml")
+
+@app.post("/twilio/gather")
+async def twilio_gather(request: Request, call_sid: str = ""):
+    form = await request.form()
+    user_text = form.get("SpeechResult", "")
+    
+    if not user_text or call_sid not in twilio_sessions:
+        response = VoiceResponse()
+        response.hangup()
+        return Response(content=str(response), media_type="application/xml")
+    
+    session = twilio_sessions[call_sid]
+    
+    await broadcast_ws({
+        "type": "user_spoke",
+        "call_sid": call_sid,
+        "text": user_text
+    })
+    
+    session["messages"].append({"role": "user", "content": user_text})
+    
+    # We call our existing local_ai logic
+    result = local_ai.generate_ai_response(user_text, session["messages"], session["context"])
+    reply = result["reply"]
+    intent = result["intent"]
+    
+    session["messages"].append({"role": "assistant", "content": reply})
+    
+    await broadcast_ws({
+        "type": "ai_replied",
+        "call_sid": call_sid,
+        "text": reply,
+        "intent": intent
+    })
+    
+    audio_path = local_audio.generate_tts(reply)
+    audio_file = os.path.basename(audio_path)
+    
+    response = VoiceResponse()
+    ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
+    response.play(f"{ngrok_url}/static/{audio_file}")
+    
+    if "[END_CALL]" in reply or len(session["messages"]) > 20:
+        response.hangup()
+        
+        # Save to DB optionally natively later
+        await broadcast_ws({
+            "type": "call_ended",
+            "call_sid": call_sid,
+            "status": "completed"
+        })
+        twilio_sessions.pop(call_sid, None)
+        return Response(content=str(response), media_type="application/xml")
+    
+    gather = Gather(
+        input="speech",
+        action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
+        speech_timeout="auto",
+        language="en-IN"
+    )
+    response.append(gather)
+    return Response(content=str(response), media_type="application/xml")
+
+@app.post("/twilio/status")
+async def twilio_status(request: Request):
+    form = await request.form()
+    call_sid = form.get("CallSid")
+    status = form.get("CallStatus")
+    
+    if status in ["completed", "failed", "busy", "no-answer"]:
+        await broadcast_ws({
+            "type": "call_ended",
+            "call_sid": call_sid,
+            "status": status
+        })
+        twilio_sessions.pop(call_sid, None)
+    
+    return {"status": "ok"}
+
+@app.post("/api/demo/call")
+async def trigger_demo_call(data: dict):
+    campaign_id = data.get("campaign_id", "")
+    call_sid = twilio_calls.make_demo_call(campaign_id)
+    if call_sid == "twilio_not_configured":
+        raise HTTPException(status_code=400, detail="Twilio is not configured in .env variables")
+    return {"call_sid": call_sid, "status": "dialing"}

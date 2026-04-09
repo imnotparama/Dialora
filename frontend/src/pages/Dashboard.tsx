@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone, X, Mic } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 function AnimatedCounter({ value }: { value: number | string }) {
@@ -38,26 +38,96 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [time, setTime] = useState(new Date());
 
+  // Twilio Demo State
+  const [liveCall, setLiveCall] = useState<any>(null);
+  const [liveTranscript, setLiveTranscript] = useState<any[]>([]);
+  const [liveIntent, setLiveIntent] = useState<string>('Neutral');
+  const [callDuration, setCallDuration] = useState(0);
+  const [showDemoModal, setShowDemoModal] = useState(false);
+  const [selectedCampaign, setSelectedCampaign] = useState<string>("");
+  const [campaigns, setCampaigns] = useState<any[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const ws = new WebSocket('ws://localhost:8000/ws/calls');
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'call_started') {
+          setLiveCall(data);
+          setLiveTranscript([]);
+          setLiveIntent('Neutral');
+          setCallDuration(0);
+        }
+        if (data.type === 'user_spoke') {
+          setLiveTranscript(prev => [...prev, { role: 'user', text: data.text }]);
+        }
+        if (data.type === 'ai_replied') {
+          setLiveTranscript(prev => [...prev, { role: 'ai', text: data.text, intent: data.intent }]);
+          setLiveIntent(data.intent);
+        }
+        if (data.type === 'call_ended') {
+          setLiveCall(null);
+          // Fetch data again after call ends to update logs
+          fetchData();
+        }
+      } catch (e) {}
+    };
+    return () => ws.close();
+  }, []);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (liveCall) {
+      timer = setInterval(() => setCallDuration(p => p + 1), 1000);
+    }
+    return () => clearInterval(timer);
+  }, [liveCall]);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [liveTranscript]);
+
   const fetchData = async () => {
     try {
-      const [st, cl, ac] = await Promise.all([
+      const [st, cl, ac, camps] = await Promise.all([
         fetch('http://localhost:8000/api/stats').then(r => r.json()),
         fetch('http://localhost:8000/api/calllogs').then(r => r.json()),
-        fetch('http://localhost:8000/api/activity').then(r => r.json())
+        fetch('http://localhost:8000/api/activity').then(r => r.json()),
+        fetch('http://localhost:8000/api/campaigns').then(r => r.json())
       ]);
       setStats(st);
       setCallLogs(cl);
       setActivity(ac);
+      setCampaigns(camps);
+      if (camps.length > 0 && !selectedCampaign) setSelectedCampaign(camps[0].id.toString());
     } catch(e) { console.error(e); } 
     finally { setLoading(false); }
   };
 
   useEffect(() => { fetchData(); }, []);
+
+  const handleStartDemo = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/demo/call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaign_id: selectedCampaign })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert("Failed to start call: " + err.detail);
+      }
+    } catch (e) {
+      alert("Network err");
+    }
+    setShowDemoModal(false);
+  };
 
   const getIntentBadge = (intent: string) => {
     const safe = (intent || 'Neutral').toUpperCase();
@@ -82,6 +152,12 @@ export default function Dashboard() {
     return `${Math.floor(hrs / 24)}d ago`;
   };
 
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   return (
     <div className="p-8 mx-auto w-full max-w-[1600px] animate-fade-in flex flex-col gap-8 h-full relative">
       
@@ -102,16 +178,96 @@ export default function Dashboard() {
             <Search className="w-4 h-4 text-gray-500 absolute left-3 top-1/2 transform -translate-y-1/2" />
             <input type="text" placeholder="Search anything..." className="bg-[#111827] border border-gray-700/50 rounded-full pl-10 pr-4 py-2 text-sm text-gray-300 focus:outline-none focus:border-dialora-indigo focus:ring-1 focus:ring-dialora-indigo transition-all w-64 group-hover:bg-[#1a2333]" />
           </div>
+          
+          <button onClick={() => setShowDemoModal(true)} className="flex items-center gap-2 bg-red-900/40 hover:bg-red-800/60 border border-red-500/50 px-5 py-2 rounded-full text-red-200 font-bold transition-all shadow-[0_0_15px_rgba(239,68,68,0.2)] text-sm">
+            <Phone className="w-4 h-4 fill-current" />
+            Live Demo Call
+          </button>
+
           <button onClick={() => window.location.href='http://localhost:8000/api/export/csv'} className="flex items-center gap-2 bg-[#111827] hover:bg-[#1a2333] border border-gray-700/50 px-4 py-2 rounded-full transition-all text-gray-300 font-medium text-sm hover:text-white">
             <FileDown className="w-4 h-4" />
             Export
           </button>
+          
           <button onClick={() => navigate('/simulate')} className="flex items-center gap-2 bg-gradient-to-r from-dialora-indigo to-cyan-500 hover:from-cyan-500 hover:to-dialora-indigo px-5 py-2 rounded-full text-white font-bold transition-all shadow-[0_0_15px_rgba(6,182,212,0.4)] text-sm ml-2">
             <Play className="w-4 h-4 fill-current" />
             Quick Start
           </button>
         </div>
       </header>
+
+      {/* Demo Modal */}
+      {showDemoModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in custom-scrollbar">
+          <div className="bg-[#111827] border border-gray-700 p-8 rounded-2xl shadow-2xl max-w-md w-full relative">
+            <button onClick={() => setShowDemoModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-white"><X className="w-5 h-5"/></button>
+            <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2"><Phone className="text-red-400"/> Dispatch Live Call</h2>
+            <p className="text-sm text-gray-400 mb-6">This will dial out via Twilio immediately. Ensure your phone is ready.</p>
+            
+            <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">Link Campaign Context</label>
+            <select 
+              value={selectedCampaign}
+              onChange={(e) => setSelectedCampaign(e.target.value)}
+              className="w-full bg-[#1a2333] border border-gray-700 rounded-xl px-4 py-3 text-white mb-6 focus:border-dialora-indigo focus:ring-1 focus:ring-dialora-indigo outline-none"
+            >
+              <option value="">- Generic Sales Profile -</option>
+              {campaigns.map(c => <option key={c.id} value={c.id.toString()}>{c.name}</option>)}
+            </select>
+
+            <button onClick={handleStartDemo} className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl transition-colors shadow-lg">
+              Dial Twilio Target Now
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* LIVE CALL MONITOR */}
+      {liveCall && (
+        <div className="w-full bg-[#111827] border-2 border-red-500/50 rounded-2xl shadow-[0_0_30px_rgba(239,68,68,0.2)] overflow-hidden flex flex-col mb-4 animate-fade-in">
+          <div className="bg-red-900/30 px-6 py-4 flex justify-between items-center border-b border-red-500/30">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2 bg-red-500 text-white px-3 py-1 rounded-full text-xs font-black tracking-widest animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.8)]">
+                <div className="w-2 h-2 bg-white rounded-full"></div> LIVE
+              </div>
+              <span className="text-red-200 font-bold">{liveCall.campaign_name || "Demo Mode"}</span>
+              <span className="text-red-400/70 text-sm font-mono">{liveCall.call_sid}</span>
+            </div>
+            
+            <div className="flex items-center gap-6">
+               <div className="flex items-center gap-2">
+                 <span className="uppercase text-[10px] text-gray-400 font-bold tracking-widest">Intent Pipeline</span>
+                 {getIntentBadge(liveIntent)}
+               </div>
+               <div className="text-white font-mono text-xl tracking-widest">{formatTime(callDuration)}</div>
+            </div>
+          </div>
+
+          <div className="p-6 h-64 overflow-y-auto bg-[#0a0f1e] flex flex-col gap-4 custom-scrollbar">
+            {liveTranscript.length === 0 ? (
+               <div className="m-auto flex flex-col items-center gap-4 text-gray-500 opacity-60">
+                 <Mic className="w-8 h-8 animate-pulse text-red-400" />
+                 Waiting for pickup...
+               </div>
+            ) : null}
+
+            {liveTranscript.map((t, i) => (
+              <div key={i} className={`flex ${t.role === 'user' ? 'justify-start' : 'justify-end'} animate-fade-in`}>
+                <div className={`max-w-[75%] px-5 py-3 text-sm shadow-xl ${
+                  t.role === 'user' 
+                  ? 'bg-[#1a2333] text-gray-200 border-l-4 border-gray-500 rounded-2xl rounded-bl-sm' 
+                  : 'bg-gradient-to-br from-cyan-900 to-cyan-950 text-white border-l-4 border-cyan-400 rounded-2xl rounded-br-sm'
+                }`}>
+                  <span className="block text-[10px] uppercase font-bold tracking-widest text-cyan-500/60 mb-1">
+                    {t.role === 'user' ? 'Customer' : 'Dialora AI'}
+                  </span>
+                  {t.text}
+                </div>
+              </div>
+            ))}
+            <div ref={scrollRef} />
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="w-full h-64 rounded-2xl animate-shimmer" style={{ background: 'linear-gradient(90deg, #111827 25%, #1f2937 50%, #111827 75%)', backgroundSize: '200% 100%' }}></div>
@@ -222,7 +378,7 @@ export default function Dashboard() {
                     </div>
                     <div className="pb-4">
                       <p className="text-sm font-semibold text-gray-200">{act.message}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">{act.sub_message}</p>
+        <p className="text-xs text-gray-400 mt-0.5">{act.sub_message}</p>
                       <p className="text-[10px] text-gray-600 font-medium mt-1.5 uppercase tracking-wide">{timeAgo(act.timestamp)}</p>
                     </div>
                   </div>

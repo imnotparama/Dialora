@@ -25,7 +25,7 @@ def generate_ai_response(prompt: str, context: list, business_context: str = Non
     messages = [{"role": "system", "content": system_prompt}] + context + [{"role": "user", "content": prompt}]
     
     payload = {
-        "model": "mistral",
+        "model": "llama3.2",
         "messages": messages,
         "stream": False,
         "temperature": 0.7
@@ -78,12 +78,12 @@ def score_call(transcript: list) -> dict:
     """
     url = "http://localhost:11434/api/chat"
     
-    sys_prompt = "You are a QA Analyst reviewing a tele-call transcript. Analyze the following conversation and return a brief summary and a lead_score from 0-10. You must ONLY output a pure JSON object in this format: {\"summary\": \"...\", \"lead_score\": 5}. Do not include markdown blocks or any other text."
+    sys_prompt = "You are a QA Analyst reviewing a tele-call transcript. Analyze the following conversation and return a brief summary, a lead_score from 0-10, and a final_intent (Must be exactly one of: 'Interested', 'Not Interested', 'Neutral'). You must ONLY output a pure JSON object in this format: {\"summary\": \"...\", \"lead_score\": 5, \"final_intent\": \"Not Interested\"}. Do not include markdown blocks. If the user declined, said no, or hung up, use 'Not Interested'."
     
     tx_str = "\n".join([f"{msg.get('role', '').upper()}: {msg.get('content', '')}" for msg in transcript])
     
     payload = {
-        "model": "mistral",
+        "model": "llama3.2",
         "messages": [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": f"Transcript:\n{tx_str}"}
@@ -101,7 +101,7 @@ def score_call(transcript: list) -> dict:
             if match:
                 try:
                     data = json.loads(match.group(0))
-                    return {"summary": data.get("summary", "No summary provided"), "lead_score": data.get("lead_score", 0)}
+                    return {"summary": data.get("summary", "No summary provided"), "lead_score": data.get("lead_score", 0), "final_intent": data.get("final_intent", "Neutral")}
                 except Exception:
                     pass
         return {"summary": "Could not parse JSON", "lead_score": 0}
