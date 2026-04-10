@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Form, File, UploadFile, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, File, UploadFile, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
