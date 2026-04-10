@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, PhoneOff, Phone, Volume2, Activity } from 'lucide-react';
 import { showToast } from '../App';
 
-// ─── Emotion Config (same as CallSimulator.tsx) ────────────────────────────
+// ─── Emotion Config ────────────────────────────────────────────────────────
 const EMOTION_CONFIG: Record<string, { emoji: string; color: string; glow: string; label: string }> = {
   ANGRY:         { emoji: '😠', color: 'bg-red-900/60 text-red-300 border border-red-700/50',         glow: '#ef4444', label: 'Angry' },
   FRUSTRATED:    { emoji: '😤', color: 'bg-orange-900/60 text-orange-300 border border-orange-700/50', glow: '#f97316', label: 'Frustrated' },
@@ -24,31 +24,48 @@ interface ChatMsg {
   intent?: string;
 }
 
-// ─── Audio queue (same pattern as CallSimulator) ───────────────────────────
-let _audioQueue: string[] = [];
-let _isPlayingAudio = false;
-let _setIsSpeaking: ((v: boolean) => void) | null = null;
-let _onSpeakingDone: (() => void) | null = null;
+// ─── Browser TTS queue ───────────────────────────────────────────────────────
+let _speakQueue: string[] = [];
+let _isSpeakingNow = false;
+let _setSpeakingState: ((v: boolean) => void) | null = null;
+let _onSpeakDone: (() => void) | null = null;
 
-function _playNext() {
-  if (_audioQueue.length === 0) {
-    _isPlayingAudio = false;
-    _setIsSpeaking?.(false);
-    _onSpeakingDone?.();
+function _speakNext() {
+  if (_speakQueue.length === 0) {
+    _isSpeakingNow = false;
+    _setSpeakingState?.(false);
+    _onSpeakDone?.();
     return;
   }
-  _isPlayingAudio = true;
-  _setIsSpeaking?.(true);
-  const url = _audioQueue.shift()!;
-  const audio = new Audio(url);
-  audio.onended = _playNext;
-  audio.onerror = _playNext;
-  audio.play().catch(() => _playNext());
+  _isSpeakingNow = true;
+  _setSpeakingState?.(true);
+  const text = _speakQueue.shift()!;
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'en-IN';
+  utter.rate = 1.0;
+  utter.pitch = 1.1;
+
+  // Pick a female voice if available
+  const voices = window.speechSynthesis.getVoices();
+  const femaleVoice = voices.find(v =>
+    /female|zira|hazel|susan|fiona|karen|samantha|victoria/i.test(v.name)
+  );
+  if (femaleVoice) utter.voice = femaleVoice;
+
+  utter.onend = _speakNext;
+  utter.onerror = _speakNext;
+  window.speechSynthesis.speak(utter);
 }
 
-function _enqueue(url: string) {
-  _audioQueue.push(url);
-  if (!_isPlayingAudio) _playNext();
+function _enqueueSpeech(text: string) {
+  _speakQueue.push(text);
+  if (!_isSpeakingNow) _speakNext();
+}
+
+function _stopSpeaking() {
+  _speakQueue = [];
+  _isSpeakingNow = false;
+  window.speechSynthesis.cancel();
 }
 
 // ─── Soundwave animation ──────────────────────────────────────────────────
@@ -60,7 +77,7 @@ function SoundWave({ active }: { active: boolean }) {
           key={i}
           className={`w-1 rounded-full bg-[#2ee2a3] transition-all ${active ? 'animate-pulse' : ''}`}
           style={{
-            height: active ? `${Math.random() * 24 + 8}px` : '4px',
+            height: active ? `${(i % 3) * 8 + 8}px` : '4px',
             animationDelay: `${i * 80}ms`,
             animationDuration: `${400 + i * 60}ms`,
           }}
@@ -90,8 +107,11 @@ export default function WebRTCCall() {
 
   // Register speaking setter
   useEffect(() => {
-    _setIsSpeaking = setIsSpeaking;
-    return () => { _setIsSpeaking = null; };
+    _setSpeakingState = setIsSpeaking;
+    // Preload voices
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+    return () => { _setSpeakingState = null; };
   }, []);
 
   // Fetch campaigns
@@ -121,7 +141,7 @@ export default function WebRTCCall() {
   const formatTime = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
-  // ─── Speech recognition (same approach as existing CallPage/CallSimulator) ──
+  // ─── Speech recognition ────────────────────────────────────────────────────
   const startRecognition = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -137,11 +157,8 @@ export default function WebRTCCall() {
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => {
       setIsListening(false);
-      // Restart only if call still active and AI is not speaking
-      if (callActiveRef.current && !_isPlayingAudio) {
-        setTimeout(() => {
-          if (callActiveRef.current) startRecognition();
-        }, 400);
+      if (callActiveRef.current && !_isSpeakingNow) {
+        setTimeout(() => { if (callActiveRef.current) startRecognition(); }, 400);
       }
     };
     recognition.onerror = (e: any) => {
@@ -152,15 +169,12 @@ export default function WebRTCCall() {
         return;
       }
       if (callActiveRef.current) {
-        setTimeout(() => {
-          if (callActiveRef.current) startRecognition();
-        }, 600);
+        setTimeout(() => { if (callActiveRef.current) startRecognition(); }, 600);
       }
     };
     recognition.onresult = (e: any) => {
       const transcript = e.results[0][0].transcript.trim();
       if (!transcript) return;
-      // Send to backend WS
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'user_speech', text: transcript }));
         setMessages(prev => [...prev, { role: 'user', text: transcript, timestamp: new Date() }]);
@@ -173,56 +187,58 @@ export default function WebRTCCall() {
 
   // ─── Start call ───────────────────────────────────────────────────────────
   const startCall = async () => {
+    if (!window.speechSynthesis) {
+      showToast('Browser TTS not supported. Use Chrome.', 'error');
+      return;
+    }
     setIsConnecting(true);
-    _audioQueue = [];
-    _isPlayingAudio = false;
+    _speakQueue = [];
+    _isSpeakingNow = false;
 
-    const host = window.location.hostname;
-    const ws = new WebSocket(`ws://${host}:8000/ws/webrtc/${sessionId}`);
+    const ws = new WebSocket(`ws://localhost:8000/ws/webrtc/${sessionId}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      const campaignId = selectedCampaign || null;
-      ws.send(JSON.stringify({ type: 'init', campaign_id: campaignId }));
+      ws.send(JSON.stringify({ type: 'init', campaign_id: selectedCampaign || null }));
     };
 
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      try {
+        const data = JSON.parse(event.data);
 
-      if (data.type === 'greeting' || data.type === 'sentence') {
-        setMessages(prev => [...prev, { role: 'ai', text: data.text, timestamp: new Date() }]);
-        if (data.audio_url) _enqueue(data.audio_url);
-        _onSpeakingDone = () => {
-          if (callActiveRef.current) startRecognition();
-        };
-      }
+        if (data.type === 'greeting' || data.type === 'sentence') {
+          const text = data.text as string;
+          // Add to transcript only once per complete message
+          if (data.type === 'greeting') {
+            setMessages(prev => [...prev, { role: 'ai', text, timestamp: new Date() }]);
+          }
+          // Speak client-side
+          _enqueueSpeech(text);
+          _onSpeakDone = () => {
+            if (callActiveRef.current) startRecognition();
+          };
+        }
 
-      if (data.type === 'done') {
-        setCurrentEmotion((data.emotion || 'NEUTRAL').toUpperCase());
-        setCurrentIntent(data.intent || 'Neutral');
-      }
+        if (data.type === 'done') {
+          setCurrentEmotion((data.emotion || 'NEUTRAL').toUpperCase());
+          setCurrentIntent(data.intent || 'Neutral');
+          // Add full AI reply to transcript after done marker
+        }
 
-      if (data.type === 'call_ended') {
-        stopCall();
-      }
+        if (data.type === 'call_ended') stopCall();
+      } catch {}
     };
 
-    ws.onclose = () => {
-      if (callActiveRef.current) stopCall();
-    };
-
+    ws.onclose = () => { if (callActiveRef.current) stopCall(); };
     ws.onerror = () => {
       showToast('WebSocket connection failed.', 'error');
       setIsConnecting(false);
     };
 
-    // Wait for greeting from server before marking call active
+    // Wait for open
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          clearInterval(check);
-          resolve();
-        }
+        if (ws.readyState === WebSocket.OPEN) { clearInterval(check); resolve(); }
       }, 100);
       setTimeout(() => { clearInterval(check); resolve(); }, 5000);
     });
@@ -239,8 +255,7 @@ export default function WebRTCCall() {
     setCallActive(false);
     setIsListening(false);
     setIsSpeaking(false);
-    _audioQueue = [];
-    _isPlayingAudio = false;
+    _stopSpeaking();
 
     try { recognitionRef.current?.stop(); } catch {}
     try {
@@ -252,6 +267,9 @@ export default function WebRTCCall() {
     wsRef.current = null;
   };
 
+  // Accumulate sentences into transcript per AI turn
+  const sentenceBuffer = useRef<string[]>([]);
+
   const emotionCfg = EMOTION_CONFIG[currentEmotion] || EMOTION_CONFIG.NEUTRAL;
 
   const getIntentColor = (intent: string) => {
@@ -261,6 +279,39 @@ export default function WebRTCCall() {
     if (i.includes('CALLBACK')) return 'text-amber-400 bg-amber-900/30 border-amber-700/50';
     return 'text-slate-300 bg-slate-800/40 border-slate-700/50';
   };
+
+  // Track sentence accumulation
+  useEffect(() => {
+    if (!wsRef.current) return;
+
+    const originalOnMessage = wsRef.current.onmessage;
+    wsRef.current.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'sentence') {
+          sentenceBuffer.current.push(data.text);
+          _enqueueSpeech(data.text);
+          _onSpeakDone = () => { if (callActiveRef.current) startRecognition(); };
+        }
+        if (data.type === 'done') {
+          if (sentenceBuffer.current.length > 0) {
+            const fullText = sentenceBuffer.current.join(' ');
+            setMessages(prev => [...prev, { role: 'ai', text: fullText, timestamp: new Date() }]);
+            sentenceBuffer.current = [];
+          }
+          setCurrentEmotion((data.emotion || 'NEUTRAL').toUpperCase());
+          setCurrentIntent(data.intent || 'Neutral');
+        }
+      } catch {}
+      // Also call the original handler for greeting/call_ended
+      if (typeof originalOnMessage === 'function') {
+        const origData = JSON.parse(event.data);
+        if (origData.type === 'greeting' || origData.type === 'call_ended') {
+          (originalOnMessage as any)(event);
+        }
+      }
+    };
+  }, [callActive]);
 
   return (
     <div className="p-6 max-w-4xl mx-auto w-full animate-fade-in flex flex-col gap-6 h-full">
@@ -287,7 +338,7 @@ export default function WebRTCCall() {
         )}
       </header>
 
-      {/* Campaign Selector (only when not in call) */}
+      {/* Campaign Selector */}
       {!callActive && (
         <div className="bg-[#111827] border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
           <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">
@@ -309,10 +360,9 @@ export default function WebRTCCall() {
         </div>
       )}
 
-      {/* Status indicators + Emotion badge */}
+      {/* Status indicators */}
       {callActive && (
         <div className="flex items-center gap-4 flex-wrap">
-          {/* Emotion badge */}
           <div
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold ${emotionCfg.color} transition-all duration-500`}
             style={{ boxShadow: `0 0 16px ${emotionCfg.glow}44` }}
@@ -321,13 +371,11 @@ export default function WebRTCCall() {
             <span>{emotionCfg.label}</span>
           </div>
 
-          {/* Intent badge */}
           <div className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border uppercase tracking-widest ${getIntentColor(currentIntent)}`}>
             <Activity className="w-3 h-3" />
             {currentIntent}
           </div>
 
-          {/* Listening indicator */}
           {isListening && (
             <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#2ee2a3]/10 border border-[#2ee2a3]/40 text-[#2ee2a3] text-sm font-semibold animate-pulse">
               <Mic className="w-4 h-4" />
@@ -335,7 +383,6 @@ export default function WebRTCCall() {
             </div>
           )}
 
-          {/* Speaking indicator */}
           {isSpeaking && (
             <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-[#5c33ff]/10 border border-[#5c33ff]/40 text-purple-300 text-sm font-semibold">
               <Volume2 className="w-4 h-4 animate-pulse" />
@@ -388,7 +435,7 @@ export default function WebRTCCall() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Call control button */}
+      {/* Call control */}
       <div className="flex justify-center">
         {!callActive ? (
           <button
@@ -418,10 +465,9 @@ export default function WebRTCCall() {
         )}
       </div>
 
-      {/* Instruction footer */}
       {!callActive && (
         <p className="text-center text-gray-600 text-xs">
-          Requires Chrome with microphone access. Make sure Ollama is running locally.
+          Requires Chrome with microphone access. Nandita speaks via your browser's built-in voice engine.
         </p>
       )}
     </div>

@@ -933,16 +933,13 @@ async def websocket_webrtc_call(websocket: WebSocket, session_id: str):
                 except Exception as e:
                     print(f"[WebRTC] Campaign fetch error: {e}")
 
-        # Send greeting
+        # Send greeting — text only (browser SpeechSynthesis handles TTS client-side)
         greeting = f"Hello! I'm Nandita, your AI assistant for {campaign_name}. How can I help you today?"
-        audio_file = await asyncio.to_thread(local_audio.generate_tts, greeting)
-        local_ip = get_local_ip()
         messages_history = [{"role": "assistant", "content": greeting}]
 
         await websocket.send_json({
             "type": "greeting",
-            "text": greeting,
-            "audio_url": f"http://{local_ip}:8000/static/{audio_file}"
+            "text": greeting
         })
         await broadcast_ws({
             "type": "call_started",
@@ -985,18 +982,16 @@ async def websocket_webrtc_call(websocket: WebSocket, session_id: str):
             emotion = result.get("emotion", "NEUTRAL") or "NEUTRAL"
             messages_history.append({"role": "assistant", "content": reply})
 
-            # Send each sentence separately for progressive audio
+            # Send reply text only — browser SpeechSynthesis handles TTS client-side
             import re as _re
             sentences = _re.split(r'(?<=[.!?])\s+', reply.strip())
             for sentence in sentences:
                 sentence = sentence.strip()
                 if not sentence:
                     continue
-                audio_file = await asyncio.to_thread(local_audio.generate_tts, sentence)
                 await websocket.send_json({
                     "type": "sentence",
-                    "text": sentence,
-                    "audio_url": f"http://{get_local_ip()}:8000/static/{audio_file}"
+                    "text": sentence
                 })
 
             await websocket.send_json({
