@@ -935,7 +935,7 @@ async def websocket_webrtc_call(websocket: WebSocket, session_id: str):
 
         # Send greeting
         greeting = f"Hello! I'm Nandita, your AI assistant for {campaign_name}. How can I help you today?"
-        audio_file = local_audio.generate_tts(greeting)
+        audio_file = await asyncio.to_thread(local_audio.generate_tts, greeting)
         local_ip = get_local_ip()
         messages_history = [{"role": "assistant", "content": greeting}]
 
@@ -970,8 +970,9 @@ async def websocket_webrtc_call(websocket: WebSocket, session_id: str):
             messages_history.append({"role": "user", "content": user_text})
             await broadcast_ws({"type": "user_spoke", "session_id": session_id, "text": user_text, "source": "webrtc"})
 
-            # Get AI response (non-streaming for WS stability)
-            result = local_ai.generate_ai_response(
+            # Get AI response (non-streaming for WS stability) using to_thread to prevent blocking
+            result = await asyncio.to_thread(
+                local_ai.generate_ai_response,
                 prompt=user_text,
                 context=messages_history[:-1],
                 business_context=context,
@@ -991,7 +992,7 @@ async def websocket_webrtc_call(websocket: WebSocket, session_id: str):
                 sentence = sentence.strip()
                 if not sentence:
                     continue
-                audio_file = local_audio.generate_tts(sentence)
+                audio_file = await asyncio.to_thread(local_audio.generate_tts, sentence)
                 await websocket.send_json({
                     "type": "sentence",
                     "text": sentence,
