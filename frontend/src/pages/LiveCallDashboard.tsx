@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Phone, Clock, Zap, Activity, PhoneOff, Radio, ChevronRight } from 'lucide-react';
+import { BACKEND_URL, WS_URL } from '../config';
 
 const EMOTION_CONFIG: Record<string, { emoji: string; color: string; label: string }> = {
   ANGRY:         { emoji: '😠', color: 'bg-red-900/50 text-red-300 border-red-700/40',       label: 'Angry' },
@@ -103,7 +104,7 @@ export default function LiveCallDashboard() {
   // Fetch historical call logs for sidebar
   const fetchHistory = async () => {
     try {
-      const data = await fetch('http://localhost:8000/api/calllogs').then(r => r.json());
+      const data = await fetch(`${BACKEND_URL}/api/calllogs`).then(r => r.json());
       if (Array.isArray(data)) setCallHistory(data.slice(0, 8));
     } catch {}
   };
@@ -117,7 +118,7 @@ export default function LiveCallDashboard() {
 
     const connect = () => {
       setWsStatus('connecting');
-      ws = new WebSocket('ws://localhost:8000/ws/calls');
+      ws = new WebSocket(`${WS_URL}/ws/calls`);
 
       ws.onopen = () => setWsStatus('idle');
 

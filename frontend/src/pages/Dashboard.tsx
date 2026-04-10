@@ -3,6 +3,7 @@ import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Cl
 import { useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { showToast } from '../App';
+import { BACKEND_URL, WS_URL } from '../config';
 
 function AnimatedCounter({ value }: { value: number | string }) {
   const [count, setCount] = useState(0);
@@ -61,7 +62,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8000/ws/calls');
+    const ws = new WebSocket(`${WS_URL}/ws/calls`);
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -108,10 +109,10 @@ export default function Dashboard() {
   const fetchData = async () => {
     try {
       const [st, cl, ac, camps] = await Promise.all([
-        fetch('http://localhost:8000/api/stats').then(r => r.json()),
-        fetch('http://localhost:8000/api/calllogs').then(r => r.json()),
-        fetch('http://localhost:8000/api/activity').then(r => r.json()),
-        fetch('http://localhost:8000/api/campaigns').then(r => r.json())
+        fetch(`${BACKEND_URL}/api/stats`).then(r => r.json()),
+        fetch(`${BACKEND_URL}/api/calllogs`).then(r => r.json()),
+        fetch(`${BACKEND_URL}/api/activity`).then(r => r.json()),
+        fetch(`${BACKEND_URL}/api/campaigns`).then(r => r.json())
       ]);
       setStats(st && !st.detail ? st : { total_calls: 0, conversion_rate: 0, active_campaigns: 0, recent_campaigns: [] });
       setCallLogs(Array.isArray(cl) ? cl : []);
@@ -126,7 +127,7 @@ export default function Dashboard() {
 
   const handleStartDemo = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/demo/call', {
+      const res = await fetch(`${BACKEND_URL}/api/demo/call`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaign_id: selectedDemoCampaign })
@@ -146,7 +147,7 @@ export default function Dashboard() {
   const handleAutoDial = async (log: any, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const statusRes = await fetch('http://localhost:8000/api/asterisk/status');
+      const statusRes = await fetch(`${BACKEND_URL}/api/asterisk/status`);
       const statusData = await statusRes.json();
       if (!statusData.running) {
         showToast("❌ Asterisk not running", "error");
@@ -154,7 +155,7 @@ export default function Dashboard() {
       }
       
       const phone = log.phone_number || "+919999999999";
-      const res = await fetch('http://localhost:8000/api/call/auto', {
+      const res = await fetch(`${BACKEND_URL}/api/call/auto`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone_number: phone, campaign_id: log.campaign_id })
@@ -241,7 +242,7 @@ export default function Dashboard() {
             📞 Call with Twilio
           </button>
 
-          <button onClick={() => window.location.href='http://localhost:8000/api/export/csv'} className="flex items-center gap-2 bg-[#111827] hover:bg-[#1a2333] border border-gray-700/50 px-4 py-2 rounded-full transition-all text-gray-300 font-medium text-sm hover:text-white">
+          <button onClick={() => window.location.href=`${BACKEND_URL}/api/export/csv`} className="flex items-center gap-2 bg-[#111827] hover:bg-[#1a2333] border border-gray-700/50 px-4 py-2 rounded-full transition-all text-gray-300 font-medium text-sm hover:text-white">
             <FileDown className="w-4 h-4" />
             Export
           </button>
@@ -311,7 +312,7 @@ export default function Dashboard() {
               <button
                 onClick={async () => {
                   try {
-                    const res = await fetch('http://localhost:8000/api/call/start', {
+                    const res = await fetch(`${BACKEND_URL}/api/call/start`, {
                       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
                         campaign_id: selectedDemoCampaign || null
                       })

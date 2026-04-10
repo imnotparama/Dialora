@@ -7,6 +7,7 @@ import Campaign from './pages/Campaign';
 import LiveCallDashboard from './pages/LiveCallDashboard';
 import CallPage from './pages/CallPage';
 import WebRTCCall from './pages/WebRTCCall';
+import { BACKEND_URL } from './config';
 
 export const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
   window.dispatchEvent(new CustomEvent('dialora-toast', { detail: { message, type } }));
@@ -76,7 +77,7 @@ function AppContent() {
   
   useEffect(() => {
     const checkOllama = () => {
-      fetch('http://localhost:8000/api/health/ollama')
+      fetch(`${BACKEND_URL}/api/health/ollama`)
         .then(res => res.ok ? res.json() : { status: 'offline' })
         .then(data => {
           setOllamaStatus(data.status);

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, PhoneOff, Phone, Volume2, Activity } from 'lucide-react';
 import { showToast } from '../App';
+import { BACKEND_URL, WS_URL } from '../config';
 
 // ─── Emotion Config ────────────────────────────────────────────────────────
 const EMOTION_CONFIG: Record<string, { emoji: string; color: string; glow: string; label: string }> = {
@@ -116,7 +117,7 @@ export default function WebRTCCall() {
 
   // Fetch campaigns
   useEffect(() => {
-    fetch('http://localhost:8000/api/campaigns')
+    fetch(`${BACKEND_URL}/api/campaigns`)
       .then(r => r.json())
       .then(d => { if (Array.isArray(d)) setCampaigns(d); })
       .catch(() => {});
@@ -195,7 +196,7 @@ export default function WebRTCCall() {
     _speakQueue = [];
     _isSpeakingNow = false;
 
-    const ws = new WebSocket(`ws://localhost:8000/ws/webrtc/${sessionId}`);
+    const ws = new WebSocket(`${WS_URL}/ws/webrtc/${sessionId}`);
     wsRef.current = ws;
 
     ws.onopen = () => {

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Save, CheckCircle, UploadCloud, ChevronRight, ChevronLeft, Building2, BrainCircuit, Rocket, Phone } from 'lucide-react';
 import { showToast } from '../App';
+import { BACKEND_URL, WS_URL } from '../config';
 
 export default function Campaign() {
   const navigate = useNavigate();
@@ -25,7 +26,7 @@ export default function Campaign() {
   // Listen for websocket events on success screen
   useEffect(() => {
     if (step === 4 && dialingStatus === 'dialing') {
-      const ws = new WebSocket('ws://localhost:8000/ws/calls');
+      const ws = new WebSocket(`${WS_URL}/ws/calls`);
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === 'auto_dial') {
@@ -55,7 +56,7 @@ export default function Campaign() {
   const handleSubmit = async () => {
     setIsSubmitting(true);
     try {
-      const res = await fetch('http://localhost:8000/api/campaigns', {
+      const res = await fetch(`${BACKEND_URL}/api/campaigns`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -70,7 +71,7 @@ export default function Campaign() {
       if (res.ok && fileObj) {
         const fd = new FormData();
         fd.append('file', fileObj);
-        const contactRes = await fetch(`http://localhost:8000/api/campaigns/${data.id}/contacts/upload`, {
+        const contactRes = await fetch(`${BACKEND_URL}/api/campaigns/${data.id}/contacts/upload`, {
           method: 'POST',
           body: fd
         });
@@ -271,7 +272,7 @@ Objection: Too expensive -> Offer 30 days free."
                       if (!newCampaignId) return;
                       setDialingStatus('starting');
                       try {
-                        const res = await fetch(`http://localhost:8000/api/campaign/${newCampaignId}/autodial`, { method: 'POST' });
+                        const res = await fetch(`${BACKEND_URL}/api/campaign/${newCampaignId}/autodial`, { method: 'POST' });
                         if (!res.ok) throw new Error();
                         const d = await res.json();
                         setTotalQueued(d.contacts_queued);
