@@ -128,7 +128,15 @@ def generate_tts_bark(text: str, emotion: str = "NEUTRAL") -> str:
 
 def generate_tts_legacy(text: str) -> str:
     """RENAMED: Original pyttsx3 TTS — fast, no emotion, Microsoft Zira voice."""
-    import pyttsx3  # CHANGED: moved import here since it's now conditional
+    import pyttsx3
+    import platform
+    if platform.system() == "Windows":
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+
     print(f"[Nandita TTS] Generating: {text}")
     try:
         engine = pyttsx3.init()
