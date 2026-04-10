@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Save, CheckCircle, UploadCloud, ChevronRight, ChevronLeft, Building2, BrainCircuit, Rocket, Phone } from 'lucide-react';
 import { showToast } from '../App';
