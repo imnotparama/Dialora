@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import CallSimulator from './pages/CallSimulator';
 import Campaign from './pages/Campaign';
 import LiveCallDashboard from './pages/LiveCallDashboard';
+import CallPage from './pages/CallPage';
 
 export const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
   window.dispatchEvent(new CustomEvent('dialora-toast', { detail: { message, type } }));
@@ -68,6 +69,7 @@ function NavLink({ to, icon: Icon, children }: { to: string, icon: any, children
 }
 
 function AppContent() {
+  const location = useLocation();
   const [ollamaStatus, setOllamaStatus] = useState<'online'|'offline'>('offline');
   const [ngrokUrl, setNgrokUrl] = useState<string>('');
   
@@ -89,6 +91,7 @@ function AppContent() {
   return (
     <div className="min-h-screen flex text-gray-100 bg-dialora-navy">
       <ToastContainer />
+      {location.pathname !== '/call' && (
       <aside className="w-64 border-r border-gray-800/50 bg-[#080c17] p-6 flex flex-col shadow-2xl relative z-10 justify-between shrink-0">
         <div>
           <div className="flex items-center gap-3 font-bold text-2xl tracking-wide text-white mb-10 select-none cursor-default">
@@ -135,6 +138,7 @@ function AppContent() {
           </div>
         </div>
       </aside>
+      )}
 
       <main className="flex-1 max-h-screen overflow-y-auto flex flex-col shrink-0 min-w-0 bg-[#0a0f1e]">
         <Routes>
@@ -142,6 +146,7 @@ function AppContent() {
           <Route path="/campaigns/new" element={<Campaign />} />
           <Route path="/simulate" element={<CallSimulator />} />
           <Route path="/live" element={<LiveCallDashboard />} />
+          <Route path="/call" element={<CallPage />} />
         </Routes>
       </main>
     </div>

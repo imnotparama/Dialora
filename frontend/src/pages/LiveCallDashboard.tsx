@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Phone, Mic, MicOff, Clock, Zap, Activity, PhoneOff, Radio, ChevronRight } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Phone, Clock, Zap, Activity, PhoneOff, Radio, ChevronRight } from 'lucide-react';
 
 const EMOTION_CONFIG: Record<string, { emoji: string; color: string; label: string }> = {
   ANGRY:         { emoji: '😠', color: 'bg-red-900/50 text-red-300 border-red-700/40',       label: 'Angry' },
@@ -82,7 +82,7 @@ export default function LiveCallDashboard() {
   const [callHistory, setCallHistory] = useState<any[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const durationRef = useRef<NodeJS.Timeout | null>(null);
+  const durationRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -113,7 +113,7 @@ export default function LiveCallDashboard() {
   // WebSocket connection
   useEffect(() => {
     let ws: WebSocket;
-    let retryTimeout: NodeJS.Timeout;
+    let retryTimeout: ReturnType<typeof setTimeout>;
 
     const connect = () => {
       setWsStatus('connecting');

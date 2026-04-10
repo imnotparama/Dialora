@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { PlusCircle, Save, CheckCircle, UploadCloud, ChevronRight, ChevronLeft, Building2, BrainCircuit } from 'lucide-react';
+import { Save, CheckCircle, UploadCloud, ChevronRight, ChevronLeft, Building2, BrainCircuit } from 'lucide-react';
 import { showToast } from '../App';
 
 export default function Campaign() {

@@ -203,12 +203,12 @@ def get_ai_response_streaming(
       {"type": "intent",   "intent": str, "emotion": str, "full_reply": str}
       {"type": "error",    "error": str}
     """
-    url = "http://localhost:11434/api/chat"
+    url = "http://127.0.0.1:11434/api/chat"
     system_prompt = get_streaming_system_prompt(business_context, script, knowledge_base)
     messages = [{"role": "system", "content": system_prompt}] + context + [{"role": "user", "content": prompt}]
 
     payload = {
-        "model": "llama3.2",
+        "model": "llama3.2:latest",
         "messages": messages,
         "stream": True,
         "temperature": 0.7
@@ -291,12 +291,12 @@ def generate_ai_response(
     script=None,
     knowledge_base=None
 ) -> dict:
-    url = "http://localhost:11434/api/chat"
+    url = "http://127.0.0.1:11434/api/chat"
     system_prompt = get_system_prompt(business_context, script, knowledge_base)
     messages = [{"role": "system", "content": system_prompt}] + context + [{"role": "user", "content": prompt}]
 
     payload = {
-        "model": "llama3.2",
+        "model": "llama3.2:latest",
         "messages": messages,
         "stream": False,
         "temperature": 0.7
@@ -358,7 +358,7 @@ def score_call(transcript: list) -> dict:
     """
     Evaluates full transcript. Returns {"summary", "lead_score", "final_intent"}.
     """
-    url = "http://localhost:11434/api/chat"
+    url = "http://127.0.0.1:11434/api/chat"
     sys_prompt = (
         "You are a QA Analyst reviewing a tele-call transcript conducted by Nandita, an AI sales agent. "
         "Analyze the conversation from the CUSTOMER's perspective and return:\n"
@@ -378,7 +378,7 @@ def score_call(transcript: list) -> dict:
         for msg in transcript
     ])
     payload = {
-        "model": "llama3.2",
+        "model": "llama3.2:latest",
         "messages": [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": f"Transcript:\n{tx_str}"}

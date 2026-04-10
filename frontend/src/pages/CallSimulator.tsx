@@ -85,18 +85,32 @@ export default function CallSimulator() {
   }, []);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/health/ollama')
-      .then(res => res.json())
-      .then(data => setOllamaStatus(data.status === 'offline' ? 'offline' : 'online'))
-      .catch(() => setOllamaStatus('offline'));
-  }, []);
+  const check = async () => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:8000/api/health/ollama`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'online') {
+          setOllamaStatus('online');
+          return;
+        }
+      }
+    } catch {}
+    setOllamaStatus('offline');
+  };
+  check();
+  const interval = setInterval(check, 10000);
+  return () => clearInterval(interval);
+}, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, liveTranscript]);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/campaigns').then(res => res.json()).then(data => {
+    fetch(`http://${window.location.hostname}:8000/api/campaigns`).then(res => res.json()).then(data => {
       setCampaigns(Array.isArray(data) ? data : []);
       if (Array.isArray(data) && data.length > 0) {
         setSelectedCampaign(data[0].id.toString());
@@ -106,7 +120,7 @@ export default function CallSimulator() {
 
     const fd = new FormData();
     fd.append('session_id', sessionId);
-    fetch('http://localhost:8000/api/simulate/start', { method: 'POST', body: fd }).catch(console.error);
+    fetch(`http://${window.location.hostname}:8000/api/simulate/start`, { method: 'POST', body: fd }).catch(console.error);
   }, [sessionId]);
 
   useEffect(() => {
@@ -266,7 +280,7 @@ export default function CallSimulator() {
     const fd = new FormData();
     fd.append('session_id', sessionId);
     if (selectedCampaign) fd.append('campaign_id', selectedCampaign);
-    await consumeStream('http://localhost:8000/api/simulate/greeting', fd, aiMsgId, true);
+    await consumeStream(`http://${window.location.hostname}:8000/api/simulate/greeting`, fd, aiMsgId, true);
   };
 
   // ─── Main turn handler ────────────────────────────────────────────────────
@@ -289,7 +303,7 @@ export default function CallSimulator() {
     }]);
     setSessionMsgCount(c => c + 1);
 
-    await consumeStream('http://localhost:8000/api/simulate/turn/stream', fd, aiMsgId, false);
+    await consumeStream(`http://${window.location.hostname}:8000/api/simulate/turn/stream`, fd, aiMsgId, false);
   };
 
   // ─── Start call + auto-greeting ───────────────────────────────────────────
@@ -369,7 +383,7 @@ export default function CallSimulator() {
         transcript: completedMessages.map(m => ({ role: m.role, content: m.content })),
         final_intent: intent
       };
-      const res = await fetch('http://localhost:8000/api/simulate/end', {
+      const res = await fetch(`http://${window.location.hostname}:8000/api/simulate/end`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

@@ -1,124 +1,183 @@
-# 🤙 Dialora — AI-Powered Intelligent Tele-Calling Agent
+# 📞 Dialora
+> A full-stack web application for an automated, emotionally intelligent tele-calling agent, featuring a real-time call monitoring dashboard and 100% local AI execution.
 
-> Built for ORIGIN 26 Hackathon by Team Fantastic Four
-
-![Python](https://img.shields.io/badge/Python-3.13-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green) ![React](https://img.shields.io/badge/React-18-cyan) ![Ollama](https://img.shields.io/badge/LLM-Llama3.2-purple) ![License](https://img.shields.io/badge/License-MIT-yellow)
-
-## 🎯 Problem Statement
-Traditional tele-calling is resource-intensive, inconsistent, and unscalable. Existing robocalls are purely static trees and fundamentally unintelligent. **Dialora solves this** by empowering scalable outbound calling campaigns fueled by a fully localized AI brain.
-
-## ✨ What Dialora Does
-- 📞 **Initiates outbound calls** automatically via Twilio.
-- 🗣️ **Speaks naturally** using premium Twilio Polly Neural TTS.
-- 🧠 **Responds dynamically** using a hyper-local **Llama 3.2** AI.
-- 🎯 **Detects real-time intent**: Interested / Not Interested / Callback.
-- 📊 **Scores leads 0-10** automatically leveraging a separate QA pipeline after every call.
-- 💻 **Streams live call transcripts** back to a rich analytics Dashboard via WebSockets.
+![License](https://img.shields.io/badge/license-Apache%202.0-blue)
+![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React-green)
+![Status](https://img.shields.io/badge/status-Active-brightgreen)
 
 ---
 
-## 🏗️ Architecture & Processing Pipeline
+## 📌 Problem Statement
+Intelligent Local-First AI Tele-Calling Agent & Conversation Analytics Platform
 
-Dialora executes inside a high-speed, 100% local processing loop (simulated mode) or via Twilio webhooks. Here is the active data lifecycle:
+---
 
-```text
-USER SPEAKS (Continuous Call Mode) 
-  --> [Frontend] webkitSpeechRecognition (Tracks silently)
-  --> Transcribes to Text natively, fires Payload on user pause (.isFinal)
-  --> POST /api/simulate/turn (user_text="abc")
-  --> [Backend FastAPI] 
-  --> Pushes Context to Ollama 
-  --> Extracts `Reply:` and `Intent:` from Ollama Text 
-  --> Maps Reply via pyttsx3 to `/static/tts_xxx.wav`
-  --> Returns JSON { user_text, reply, intent, audio_url }
-  --> [Frontend] Auto-Pauses Mic -> Plays Audio Hook -> Auto-Resumes Mic
+## 🚀 Features
+
+| Feature | Description |
+|---|---|
+| 🧠 **Local LLM Engine** | Analyze conversations and drive human-like interactions entirely locally using Ollama (Llama 3.2) |
+| 🌐 **LAN Mobile Calling** | Perform live telephony sessions by pairing a mobile device via QR Code over local Wi-Fi, bypassing generic telephony APIs |
+| 📊 **Live Dashboard** | Real-time visualization of call metrics, lead conversion rates, and live transcriptions |
+| 🧩 **Emotion Detection** | HuggingFace distilRoBERTa dynamically identifies user emotion (Angry, Hesitant, etc.) to adapt the agent's tone |
+| 🗣️ **Instant Voice Pipeline** | Combines Native Browser Speech-to-Text with instant offline Text-to-Speech (`pyttsx3`) for zero-latency conversations |
+| ⚙️ **Bidirectional Streaming** | FastAPI backend with structured REST API and WebSocket events for live Call Hub synchronization |
+
+---
+
+## 🏗️ Tech Stack
+
+**Frontend**
+* ⚛️ **React.ts** — Component-based UI using Vite
+* 🎨 **TailwindCSS** — Utility-first modern dark-mode styling
+* 🎤 **Web Speech API** — Native browser-based STT capturing
+* ⚡ **WebSockets** — Bidirectional real-time stream communication
+
+**Backend**
+* 🐍 **FastAPI (Python)** — REST API framework and ASGI event streaming
+* 🦙 **Ollama (Llama 3.2)** — Local LLM generation
+* 🤗 **Transformers** — Emotion classification via `j-hartmann/emotion-english-distilroberta-base`
+* 💾 **SQLite / SQLAlchemy** — Durable relational database schema caching
+
+---
+
+## 📂 Project Structure
+
+```
+Dialora/
+├── backend/
+│   ├── database.py              # SQLite Engine + Session builder
+│   ├── models.py                # Campaigns, Contacts, CallLogs schema
+│   ├── main.py                  # FastAPI entry point, Routes, & WS
+│   ├── local_ai.py              # Ollama Context limits, streaming logic
+│   ├── emotion_classifier.py    # HF Pipeline for text-based emotion inference
+│   ├── local_audio.py           # pyttsx3 local audio generator
+│   ├── requirements.txt         # Python dependencies
+│   └── start.bat                # Windows launch script
+│
+├── frontend/
+│   ├── src/
+│   │   ├── pages/
+│   │   │   ├── Dashboard.tsx        # Analytics + Live WebSocket monitor + QR Link Generator
+│   │   │   ├── Campaign.tsx         # 3-step CSV upload wizard
+│   │   │   ├── CallSimulator.tsx    # Desktop SSE streaming call simulator
+│   │   │   ├── LiveCallDashboard.tsx# Dedicated Twilio live monitor
+│   │   │   └── CallPage.tsx         # Responsive Mobile Call Interface
+│   │   ├── App.tsx                  # Root routing layout
+│   │   ├── index.css                # Global animations / Tailwind injection
+│   │   └── main.tsx                 # Entrypoint
+│   ├── package.json
+│   └── tailwind.config.js
+│
+└── README.md
 ```
 
 ---
 
-## 🚀 Quick Start
+## ⚙️ Installation & Setup
 
-### Prerequisites
-- **Python 3.13** inside system `PATH`.
-- **Node.js 18+** for the frontend client.
-- **Ollama** installed running natively in the background ([ollama.com/download](https://ollama.com/download)).
-- **Twilio Account** (optional, required only for Real-World Outbound Mode).
+**Prerequisites**
+* Python 3.13+
+* Node.js 18+
+* [Ollama](https://ollama.com) installed with `llama3.2` pulled (`ollama run llama3.2`)
 
-### Installation
-
-**1. Clone the Repository**
+### 1. Clone the Repository
 ```bash
-git clone https://github.com/your-username/dialora.git
-cd dialora
+git clone https://github.com/imnotparama/Dialora.git
+cd Dialora
 ```
 
-**2. Backend Setup**
-Navigate to the backend and initialize your Python dependencies.
+### 2. Backend Setup
 ```bash
 cd backend
-python -m venv venv
-source venv/Scripts/activate  # (On Windows git bash)
+python -m venv .env
+.env\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env          # Update .env with your credentials if using Twilio
+uvicorn main:app --reload --port 8000 --host 0.0.0.0
 ```
+* Backend runs at `http://127.0.0.1:8000`
+* API docs available at `http://127.0.0.1:8000/docs`
 
-**3. Initialize the Local AI Brain**
-With Ollama installed on your device, pull the required model matrix!
-```bash
-ollama pull llama3.2
-```
-
-**4. Frontend Setup**
-Navigate to the frontend React workspace.
-```bash
-cd ../frontend
-npm install
-```
-
-**5. Spin Up Systems**
-You will need two terminals to run the system cleanly:
-Terminal 1 (Backend):
-```bash
-cd backend
-uvicorn main:app --reload
-```
-Terminal 2 (Frontend):
+### 3. Frontend Setup
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
-Navigate to `http://localhost:5173` to view the Dashboard!
+* Frontend Network proxy runs at `http://<YOUR_LOCAL_IP>:5173`
+
+*(Note: Chrome blocks microphone access for HTTP sites on mobile. Go to `chrome://flags/#unsafely-treat-insecure-origin-as-secure` on your Android and whitelist `http://<YOUR_LOCAL_IP>:5173` to test live calls!)*
 
 ---
 
-## 🎮 Demo Mode (Simulator Studio)
-Dialora ships with the fully independent **Simulator Studio**. This environment works 100% offline with ZERO external API dependencies.
-1. Create a `Campaign` in the frontend workflow.
-2. Hit the "Quick Start" simulator mode.
-3. Allow microphone permissions.
-4. Talk directly into your computer; Dialora's local engine will track your voice continuously and render responses utilizing local system `pyttsx3` Voice synthesizers.
+## 🧠 How It Works
 
-## 📞 Live Call Mode (Twilio Telephony)
-Take your solution out of the local box and onto real-world cell networks.
-1. Create a free Twilio account to get an `ACCOUNT_SID` and `AUTH_TOKEN`.
-2. Start an Ngrok tunnel to expose your local FastAPI server to the internet:
-   ```bash
-   ngrok http 8000
-   ```
-3. Update your `.env` file with the Twilio credentials and the `NGROK_URL`.
-4. Click **Live Demo Call** on the Dashboard, select your Campaign target, and Dialora will physically call your cell phone!
+**Campaign & Lead Parsing**
+* The User establishes a Campaign context (Business Description, Script, Knowledge Base FAQs).
+* The user uploads a CSV of target names & phone numbers directly attached to the Campaign context.
+
+**📱 QR Code Mobile Pairing Architecture (LAN Calling)**
+* Instead of typing URLs, the user clicks "Generate Call Link" on the Dashboard to instantly provision a unique Call Session ID.
+* The system dynamically generates an **interactive QR Code** locked to your local network's IP address.
+* The user simply **scans the QR Code with their mobile phone** to bypass cumbersome third-party APIs (like Twilio).
+* This instantly securely connects the phone's browser to the backend via full-duplex WebSockets, seamlessly turning the phone into a live Tele-calling headset using Chrome's native Webkit microphone.
+
+**Emotional Interaction Flow**
+* Native transcription is routed to the Backend.
+* Backend passes transcription into HuggingFace distilRoBERTa, mapping it against 10 emotional classes (Angry, Hesitant, Excited, etc.).
+* Llama 3.2 ingests contextual history, business context, and emotional tags to tailor its textual response.
+* `pyttsx3` synthesizes the offline MP4 in milliseconds, distributing both the TTS and live socket intent tags back to the Dashboard and caller interface.
 
 ---
 
-## 👥 Team
-**Team Fantastic Four**
-- Dharshan 
-- Parama
-- Hunter
-- Alex (Change names as appropriate)
+## 📈 Scalability
+* The local AI backend architecture can be decoupled and migrated into Dockerized Cloud GPUs (using vLLM) allowing dozens of concurrent simulated calls to execute simultaneously.
+* The WebSocket streaming events are isolated to allow infinite external monitor interfaces to sub-pub to the live broadcast channel natively.
+* The SQLite foundation allows seamless migration to PostgreSQL utilizing identical SQLAlchemy ORM layouts.
 
-*SRM Institute of Science and Technology, Ramapuram*
+---
 
-## 🏆 Built for
-**ORIGIN 26 Hackathon** — SIMATS Engineering College  
-**Problem Statement PS-02** by Vedaspark
+## 💡 Feasibility
+Dialora embraces a highly robust MVP composition utilizing enterprise-grade technologies like React, FastAPI, and Hugging Face Transformers. By swapping heavy paid-API integrations with native tooling (`pyttsx3`, `webkit STT`, Ollama), Dialora requires literally zero operating cost or complex API key configurations, serving directly effectively as out-of-the-box infrastructure.
+
+---
+
+## 🌟 Novelty
+Traditional Voice AI tooling focuses heavily on rigid routing setups or costs upwards of hundreds of dollars just for trial configurations (e.g. Twilio Voice, ElevenLabs, OpenAI Whisper). By completely removing cloud-bound telephony setups, Dialora allows hyper-realistic human conversational interactions via a hybrid mobile-LAN integration technique; developers scan a QR code and immediately have a full-service Tele-robot operating across the room. Additionally, layering an intermediary NLP classification algorithm over Llama vastly deepens conversational fidelity without token waste. 
+
+---
+
+## 🔧 Feature Depth
+* **Dynamic Grounding:** Keywords ("not interested", "call me back") instantly govern the LLM intent tree to halt hallucinations and safely end calls over boundaries.
+* **Granular Emotion System:** Detects and classifies 10 discrete human emotions.
+* **CSV Bulk Management:** Imports complex contact lead books with automated scoring systems generating `Dialora_report.csv` dumps natively.
+* **Low-latency Focus:** Zero dependencies; completely offline functionality bridging web-technologies efficiently to avoid WebRTC ICE configuration issues.
+
+---
+
+## ⚠️ Ethical Use & Disclaimer
+Dialora is strictly built for educational, research, and authorized hackathon-use only. 
+Do NOT use this tool or its integrations to spoof, spam, or robocall unconsenting individuals. Use responsibly, ethically, and strictly within the boundaries of telecommunications laws inside your respective jurisdictions.
+
+---
+
+## 📜 License
+Licensed under the Apache 2.0 License.
+
+---
+
+## 🤝 Contributing
+Contributions are welcome.
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Commit your changes: `git commit -m "Add feature-name"`
+4. Push and open a Pull Request
+
+---
+
+## 🧩 Author
+Parameshwaran S
+C.Monish Nandha Balan
+Kavibharathi K
+Dharshan Kumar K
+🔗 [GitHub](https://github.com/imnotparama)

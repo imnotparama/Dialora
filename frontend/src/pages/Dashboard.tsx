@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone, X, Mic, MessageSquare, AlertTriangle, CheckCircle, Copy } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { PhoneOutgoing, Activity, Users, FileDown, UploadCloud, Search, Play, Clock, Phone, X, Mic, MessageSquare } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { QRCodeSVG } from 'qrcode.react';
 import { showToast } from '../App';
 
 function AnimatedCounter({ value }: { value: number | string }) {
@@ -28,7 +29,7 @@ function AnimatedCounter({ value }: { value: number | string }) {
   }, [target, isNumeric]);
   
   if (!isNumeric) return <>{value}</>;
-  return <>{value % 1 === 0 ? Math.floor(count) : count.toFixed(1)}</>;
+  return <>{Number(value) % 1 === 0 ? Math.floor(count) : count.toFixed(1)}</>;
 }
 
 export default function Dashboard() {
@@ -44,11 +45,12 @@ export default function Dashboard() {
   const [liveTranscript, setLiveTranscript] = useState<any[]>([]);
   const [liveIntent, setLiveIntent] = useState<string>('Neutral');
   const [callDuration, setCallDuration] = useState(0);
+  const [showQR, setShowQR] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
-  const [selectedCampaign, setSelectedCampaign] = useState<string>("");
+  const [callUrl, setCallUrl] = useState('');
   const [campaigns, setCampaigns] = useState<any[]>([]);
-  const [serverConfig, setServerConfig] = useState<any>(null);
-  const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [selectedDemoCampaign, setSelectedDemoCampaign] = useState('');
+    const [selectedLog, setSelectedLog] = useState<any>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -85,7 +87,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    let timer: NodeJS.Timeout;
+    let timer: ReturnType<typeof setInterval>;
     if (liveCall) {
       timer = setInterval(() => setCallDuration(p => p + 1), 1000);
     }
@@ -98,19 +100,17 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const [st, cl, ac, camps, conf] = await Promise.all([
+      const [st, cl, ac, camps] = await Promise.all([
         fetch('http://localhost:8000/api/stats').then(r => r.json()),
         fetch('http://localhost:8000/api/calllogs').then(r => r.json()),
         fetch('http://localhost:8000/api/activity').then(r => r.json()),
-        fetch('http://localhost:8000/api/campaigns').then(r => r.json()),
-        fetch('http://localhost:8000/api/health/ollama').then(r => r.json())
+        fetch('http://localhost:8000/api/campaigns').then(r => r.json())
       ]);
       setStats(st && !st.detail ? st : { total_calls: 0, conversion_rate: 0, active_campaigns: 0, recent_campaigns: [] });
       setCallLogs(Array.isArray(cl) ? cl : []);
       setActivity(Array.isArray(ac) ? ac : []);
       setCampaigns(Array.isArray(camps) ? camps : []);
-      setServerConfig(conf);
-      if (Array.isArray(camps) && camps.length > 0 && !selectedCampaign) setSelectedCampaign(camps[0].id.toString());
+      if (Array.isArray(camps) && camps.length > 0 && !selectedDemoCampaign) setSelectedDemoCampaign(camps[0].id.toString());
     } catch(e) { console.error(e); } 
     finally { setLoading(false); }
   };
@@ -118,30 +118,22 @@ export default function Dashboard() {
   useEffect(() => { fetchData(); }, []);
 
   const handleStartDemo = async () => {
-    if (serverConfig && !serverConfig.twilio_configured) {
-      showToast('Twilio is not configured. Please set credentials in backend/.env first.', 'error');
-      return;
-    }
-    if (serverConfig && (!serverConfig.ngrok_url || serverConfig.ngrok_url.includes('xxxx'))) {
-      showToast('Please set a valid NGROK_URL in backend/.env before making live calls.', 'error');
-      return;
-    }
     try {
       const res = await fetch('http://localhost:8000/api/demo/call', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaign_id: selectedCampaign })
+        body: JSON.stringify({ campaign_id: selectedDemoCampaign })
       });
-      if (!res.ok) {
-        const err = await res.json();
-        showToast('Failed to start call: ' + (err.detail || 'Unknown error'), 'error');
+      if (res.ok) {
+        showToast("Call initiated! Your Twilio number is dialing the target.", "success");
+        setShowDemoModal(false);
       } else {
-        showToast('📞 Dialing now! Watch the Live Call Monitor.', 'success');
+        const error = await res.json();
+        showToast(error.detail || "Failed to initiate call", "error");
       }
     } catch (e) {
-      showToast('Network error — is the backend running?', 'error');
+      showToast("Network error initiating call.", "error");
     }
-    setShowDemoModal(false);
   };
 
   const getIntentBadge = (intent: string) => {
@@ -194,9 +186,18 @@ export default function Dashboard() {
             <input type="text" placeholder="Search anything..." className="bg-[#111827] border border-gray-700/50 rounded-full pl-10 pr-4 py-2 text-sm text-gray-300 focus:outline-none focus:border-dialora-indigo focus:ring-1 focus:ring-dialora-indigo transition-all w-64 group-hover:bg-[#1a2333]" />
           </div>
           
-          <button onClick={() => setShowDemoModal(true)} className="flex items-center gap-2 bg-red-900/40 hover:bg-red-800/60 border border-red-500/50 px-5 py-2 rounded-full text-red-200 font-bold transition-all shadow-[0_0_15px_rgba(239,68,68,0.2)] text-sm">
-            <Phone className="w-4 h-4 fill-current" />
-            Live Demo Call
+          <button
+            onClick={() => setShowQR(true)}
+            className="flex items-center gap-2 bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors duration-200"
+          >
+            📱 QR Link
+          </button>
+
+          <button
+            onClick={() => setShowDemoModal(true)}
+            className="flex items-center gap-2 bg-dialora-indigo hover:bg-dialora-indigo/80 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors duration-200"
+          >
+            📞 Call with Twilio
           </button>
 
           <button onClick={() => window.location.href='http://localhost:8000/api/export/csv'} className="flex items-center gap-2 bg-[#111827] hover:bg-[#1a2333] border border-gray-700/50 px-4 py-2 rounded-full transition-all text-gray-300 font-medium text-sm hover:text-white">
@@ -210,84 +211,106 @@ export default function Dashboard() {
           </button>
         </div>
       </header>
+      
+      {/* Twilio Modal */}
+      {showDemoModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#111827] border border-gray-700 rounded-2xl p-8 max-w-md w-full shadow-2xl relative">
+            <h3 className="text-xl font-bold text-white mb-2">Live Twilio Demo</h3>
+            <p className="text-sm text-gray-400 mb-6">Dial out via Twilio to a real phone. Requires backend/.env setup.</p>
+            
+            <div className="space-y-4">
+               <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block">Link Campaign Context</label>
+               <select
+                 value={selectedDemoCampaign}
+                 onChange={(e) => setSelectedDemoCampaign(e.target.value)}
+                 className="w-full bg-[#1a2333] border border-gray-700/50 rounded-xl px-4 py-3 text-gray-300 focus:border-dialora-indigo focus:outline-none mb-4"
+               >
+                 <option value="">- Generic Sales Profile -</option>
+                 {campaigns.map(c => <option key={c.id} value={c.id.toString()}>{c.name}</option>)}
+               </select>
+
+               <button onClick={handleStartDemo} className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl transition-colors shadow-lg flex items-center justify-center gap-2 mb-2">
+                 <Phone className="w-4 h-4 fill-current" /> Dial Twilio Target Now
+               </button>
+               
+               <button onClick={() => setShowDemoModal(false)} className="w-full text-center text-sm text-gray-500 hover:text-gray-300 py-2">
+                 Close
+               </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Demo Modal */}
-      {showDemoModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in p-4">
-          <div className="bg-[#111827] border border-gray-700 p-8 rounded-2xl shadow-2xl max-w-lg w-full relative">
-            <button onClick={() => setShowDemoModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"><X className="w-5 h-5"/></button>
-            <h2 className="text-2xl font-bold text-white mb-1 flex items-center gap-2"><Phone className="text-red-400 w-6 h-6"/> Dispatch Live Call</h2>
-            <p className="text-sm text-gray-400 mb-6">Dial out via Twilio to a real phone. Requires Twilio credentials + Ngrok.</p>
-
-            {/* Twilio NOT configured — show setup guide */}
-            {serverConfig && !serverConfig.twilio_configured ? (
-              <div className="space-y-4">
-                <div className="flex items-start gap-3 bg-amber-900/20 border border-amber-500/40 rounded-xl p-4">
-                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-amber-300 font-bold text-sm">Twilio credentials not configured</p>
-                    <p className="text-amber-400/80 text-xs mt-1">Add these 5 keys to <code className="bg-black/40 px-1 rounded font-mono">backend/.env</code> to enable live calling:</p>
-                  </div>
+      {showQR && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#111827] border border-cyan-500/30 rounded-2xl p-8 max-w-sm w-full text-center">
+            <h3 className="text-cyan-400 text-xl font-semibold mb-1">
+              Scan to Call Dialora
+            </h3>
+            <p className="text-gray-400 text-sm mb-4">
+              Open on any phone — Chrome required
+            </p>
+            
+            {/* Campaign selector */}
+            <select
+              value={selectedDemoCampaign}
+              onChange={e => setSelectedDemoCampaign(e.target.value)}
+              className="w-full bg-[#1a2035] border border-gray-700 text-gray-300 rounded-xl px-3 py-2 text-sm mb-4"
+            >
+              <option value="">— Generic Demo —</option>
+              {campaigns.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            
+            {/* Generate button */}
+            {!callUrl && (
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await fetch('http://localhost:8000/api/call/start', {
+                      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+                        campaign_id: selectedDemoCampaign || null
+                      })
+                    });
+                    const data = await res.json();
+                    setCallUrl(data.call_url);
+                  } catch (e) {
+                    console.error("Failed to generate call link:", e);
+                  }
+                }}
+                className="w-full bg-cyan-600 hover:bg-cyan-500 text-white py-3 rounded-xl font-medium mb-4 transition-colors"
+              >
+                Generate Call Link
+              </button>
+            )}
+            
+            {/* QR Code */}
+            {callUrl && (
+              <div className="flex flex-col items-center gap-3">
+                <div className="bg-white p-3 rounded-xl">
+                  <QRCodeSVG 
+                    value={callUrl} 
+                    size={180}
+                    bgColor="#ffffff"
+                    fgColor="#0a0f1e"
+                  />
                 </div>
-
-                <div className="bg-[#0a0f1e] border border-gray-700/60 rounded-xl p-4 font-mono text-xs text-gray-300 space-y-1.5 leading-relaxed">
-                  <p><span className="text-cyan-400">TWILIO_ACCOUNT_SID</span>=<span className="text-green-400">ACxxxxxxxxxxxxxxxxxxxxxxxxxxxx</span></p>
-                  <p><span className="text-cyan-400">TWILIO_AUTH_TOKEN</span>=<span className="text-green-400">your_auth_token</span></p>
-                  <p><span className="text-cyan-400">TWILIO_PHONE_NUMBER</span>=<span className="text-green-400">+1xxxxxxxxxx</span></p>
-                  <p><span className="text-cyan-400">DEMO_PHONE_NUMBER</span>=<span className="text-green-400">+91xxxxxxxxxx</span></p>
-                  <p><span className="text-cyan-400">NGROK_URL</span>=<span className="text-green-400">https://xxxx.ngrok-free.app</span></p>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">Quick setup steps:</p>
-                  {[
-                    ['1', 'Sign up free at', 'twilio.com', 'https://twilio.com'],
-                    ['2', 'Get a Twilio phone number (trial is free)'],
-                    ['3', 'Run', 'ngrok http 8000', null],
-                    ['4', 'Paste all values into backend/.env and restart server'],
-                  ].map(([num, text, link, href]: any, i) => (
-                    <div key={i} className="flex items-start gap-2 text-xs text-gray-400">
-                      <span className="w-5 h-5 rounded-full bg-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300 shrink-0">{num}</span>
-                      <span>{text} {link && (href ? <a href={href} target="_blank" className="text-cyan-400 hover:underline">{link}</a> : <code className="bg-black/40 px-1 rounded font-mono text-cyan-400">{link}</code>)}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex gap-3 pt-2">
-                  <button onClick={() => setShowDemoModal(false)} className="flex-1 bg-[#1a2333] hover:bg-[#253147] border border-gray-700 text-gray-300 font-bold py-2.5 rounded-xl transition-all text-sm">
-                    Close
-                  </button>
-                  <button onClick={() => { fetchData(); }} className="flex-1 bg-dialora-indigo/30 hover:bg-dialora-indigo/50 border border-dialora-indigo/50 text-purple-300 font-bold py-2.5 rounded-xl transition-all text-sm">
-                    Re-check Config
-                  </button>
-                </div>
-              </div>
-            ) : (
-              /* Twilio IS configured — show dial UI */
-              <div>
-                <div className="flex items-center gap-2 bg-green-900/20 border border-green-500/30 rounded-xl px-4 py-2.5 mb-6">
-                  <CheckCircle className="w-4 h-4 text-green-400" />
-                  <span className="text-green-300 text-sm font-medium">Twilio configured — ready to dial</span>
-                  {serverConfig?.ngrok_url && (
-                    <span className="ml-auto text-green-400/60 text-xs font-mono truncate max-w-[180px]">{serverConfig.ngrok_url}</span>
-                  )}
-                </div>
-
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">Link Campaign Context</label>
-                <select
-                  value={selectedCampaign}
-                  onChange={(e) => setSelectedCampaign(e.target.value)}
-                  className="w-full bg-[#1a2333] border border-gray-700 rounded-xl px-4 py-3 text-white mb-6 focus:border-dialora-indigo outline-none"
-                >
-                  <option value="">- Generic Sales Profile -</option>
-                  {campaigns.map(c => <option key={c.id} value={c.id.toString()}>{c.name}</option>)}
-                </select>
-
-                <button onClick={handleStartDemo} className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl transition-colors shadow-lg flex items-center justify-center gap-2">
-                  <Phone className="w-4 h-4 fill-current" /> Dial Twilio Target Now
-                </button>
+                <p className="text-gray-500 text-xs break-all">{callUrl}</p>
+                <p className="text-green-400 text-xs">
+                  ✅ Make sure phone is on same WiFi
+                </p>
               </div>
             )}
+            
+            <button
+              onClick={() => { setShowQR(false); setCallUrl(''); }}
+              className="mt-4 text-gray-500 hover:text-gray-300 text-sm transition-colors"
+            >
+              Close
+            </button>
           </div>
         </div>
       )}

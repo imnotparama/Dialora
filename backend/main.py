@@ -33,6 +33,7 @@ connected_websockets = set()
 twilio_sessions = {}
 
 async def broadcast_ws(data: dict):
+    global connected_websockets
     dead = set()
     for ws in connected_websockets:
         try:
@@ -597,51 +598,56 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.post("/twilio/voice")
 async def twilio_voice(request: Request, campaign_id: str = "", db: Session = Depends(get_db)):
-    if campaign_id:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-        context = campaign.business_context if campaign else "AI tele-calling agent"
-    else:
-        context = "AI tele-calling agent"
+    try:
+        if campaign_id:
+            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+            context = campaign.business_context if campaign else "AI tele-calling agent"
+        else:
+            context = "AI tele-calling agent"
+            campaign = None
+            
+        form = await request.form()
+        call_sid = form.get("CallSid", "unknown")
         
-    form = await request.form()
-    call_sid = form.get("CallSid", "unknown")
-    
-    # Resolve campaign KB so the AI has full context on the live call
-    camp_ctx = campaign.business_context if campaign_id and campaign else context
-    camp_script = campaign.script if campaign_id and campaign else None
-    camp_kb = campaign.knowledge_base if campaign_id and campaign else None
+        # Resolve campaign KB so the AI has full context on the live call
+        camp_ctx = campaign.business_context if campaign_id and campaign else context
+        camp_script = campaign.script if campaign_id and campaign else None
+        camp_kb = campaign.knowledge_base if campaign_id and campaign else None
 
-    twilio_sessions[call_sid] = {
-        "messages": [],
-        "campaign_id": campaign_id,
-        "context": camp_ctx,
-        "script": camp_script,
-        "knowledge_base": camp_kb
-    }
-    
-    greeting = f"Hello! My name is Nandita, and I'm calling on behalf of Dialora. {context}. Is this a good time to talk?"
-    
-    await broadcast_ws({
-        "type": "call_started",
-        "call_sid": call_sid,
-        "campaign_id": campaign_id,
-        "campaign_name": campaign.name if campaign_id and campaign else "Demo Mode"
-    })
-    
-    response = VoiceResponse()
-    ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
-    
-    # Female Indian English voice for Nandita
-    response.say(greeting, voice="Polly.Aditi")
-    
-    gather = Gather(
-        input="speech",
-        action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
-        speech_timeout=1,
-        language="en-IN"
-    )
-    response.append(gather)
-    return Response(content=str(response), media_type="application/xml")
+        twilio_sessions[call_sid] = {
+            "messages": [],
+            "campaign_id": campaign_id,
+            "context": camp_ctx,
+            "script": camp_script,
+            "knowledge_base": camp_kb
+        }
+        
+        greeting = f"Hello! My name is Nandita, and I'm calling on behalf of Dialora. {context}. Is this a good time to talk?"
+        
+        await broadcast_ws({
+            "type": "call_started",
+            "call_sid": call_sid,
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.name if campaign_id and campaign else "Demo Mode"
+        })
+        
+        response = VoiceResponse()
+        ngrok_url = os.getenv("NGROK_URL", "http://localhost:8000")
+        
+        # Female Indian English voice for Nandita
+        response.say(greeting, voice="Polly.Aditi")
+        
+        gather = Gather(
+            input="speech",
+            action=f"{ngrok_url}/twilio/gather?call_sid={call_sid}",
+            speech_timeout=1,
+            language="en-IN"
+        )
+        response.append(gather)
+        return Response(content=str(response), media_type="application/xml")
+    except Exception as e:
+        import traceback
+        return Response(content=traceback.format_exc(), status_code=500)
 
 @app.post("/twilio/gather")
 async def twilio_gather(request: Request, call_sid: str = ""):

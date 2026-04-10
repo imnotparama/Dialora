@@ -1,18 +1,18 @@
 # Dialora — Complete AI Handoff Document
-> Last updated: 2026-04-10 Session 5. Written for a new AI agent to fully understand the entire codebase, architecture, decisions, and current state of the Dialora hackathon project.
+> Last updated: 2026-04-10 Session 6. Written for a new AI agent to fully understand the entire codebase, architecture, decisions, and current state of the Dialora hackathon project.
 
 ---
 
 ## 1. What Is Dialora?
 
-Dialora is an **AI-powered tele-calling agent** built for a hackathon. It started as an external-API-dependent system (Twilio + Anthropic + ElevenLabs) and was pivoted mid-hackathon into a **100% local, free-to-run platform**. The core innovation is:
+Dialora is an **AI-powered tele-calling agent** built for a hackathon. It was pivoted mid-hackathon into a **100% local, free-to-run platform**, completely removing all external dependencies like Twilio, Anthropic, and ElevenLabs.
 
 - A **local LLM** (Ollama / Llama 3.2) handles all AI conversation logic.
-- **Browser-native Speech-to-Text** (`webkitSpeechRecognition` in Chrome) captures customer speech — bypassing Python 3.13's broken audio library ecosystem.
-- **pyttsx3** handles offline Text-to-Speech on the backend (with optional **suno/bark** for emotion-aware TTS).
-- **Twilio** is optionally layered on for real-world cellular call demonstrations. This requires a valid Twilio account + an Ngrok tunnel.
-- **Emotional Intelligence** — A **dedicated HuggingFace distilRoBERTa classifier** (`j-hartmann/emotion-english-distilroberta-base`) detects the caller's emotional state from their text. The LLM adapts its response strategy accordingly.
-- **Low-latency streaming** — Ollama responses stream sentence-by-sentence via SSE. The first word of Nandita's reply plays before the model has even finished generating the full response.
+- **Browser-native Speech-to-Text** (`webkitSpeechRecognition` in Chrome) captures customer speech.
+- **pyttsx3** handles offline Text-to-Speech on the backend (with optional **suno/bark** disabled for WebRTC latency).
+- **100% Local Wi-Fi Calls:** Instead of Twilio, users scan a QR code from the dashboard to initiate a real-time call from their mobile phone directly to the local backend using WebSockets.
+- **Emotional Intelligence** — A **dedicated HuggingFace distilRoBERTa classifier** detects the caller's emotional state from their text. The LLM adapts its response strategy accordingly.
+- **Low-latency streaming** — Ollama responses stream sentence-by-sentence.
 
 **Project directory:** `c:\Users\hunte\Fantastic Four - Dialora\`
 **GitHub:** `https://github.com/imnotparama/Dialora` (branch: `main`)
@@ -28,13 +28,12 @@ Dialora is an **AI-powered tele-calling agent** built for a hackathon. It starte
 | Database ORM | SQLAlchemy (SQLite) |
 | Local LLM | HTTP requests → Ollama @ `localhost:11434` |
 | Emotion Detection | `transformers` pipeline → `j-hartmann/emotion-english-distilroberta-base` (CPU) |
-| Offline TTS | `pyttsx3` (default) or `suno/bark` via `transformers` (optional, `USE_BARK=True`) |
-| Real-world telephony | `twilio` SDK |
+| Offline TTS | `pyttsx3` (default) or `suno/bark` via `transformers` (USE_BARK=False to prevent WS timeouts) |
+| Networking | Host network binding `0.0.0.0` for cross-device LAN proxy |
 | Env config | `python-dotenv` |
+| Real-time Call | `WebSockets` via FastAPI endpoint `/ws/call/{session_id}` |
 | Streaming | `asyncio` + `threading` + `asyncio.Queue` |
 | SSE | FastAPI `StreamingResponse` (`text/event-stream`) |
-
-> **Critical Python 3.13 note:** `openai-whisper` and `SpeechRecognition` are both broken on Python 3.13 because the `aifc` module was removed. **Do NOT attempt to use them for backend STT.** All STT is done in the browser.
 
 ### Frontend — React + TypeScript
 | Concern | Library |
@@ -44,8 +43,9 @@ Dialora is an **AI-powered tele-calling agent** built for a hackathon. It starte
 | Styling | Tailwind CSS **v3.4.17** (NOT v4 — v4 breaks CSS nesting in Vite) |
 | Routing | `react-router-dom` |
 | Icons | `lucide-react` |
+| QR Code | `qrcode.react` (for Mobile sync) |
 | STT | `window.webkitSpeechRecognition` (Chrome only) |
-| Real-time | Native WebSocket to `ws://localhost:8000/ws/calls` |
+| Real-time | Native WebSocket to `ws://{host}:8000/ws/call/{id}` |
 | SSE | Native `fetch` + `ReadableStream` reader |
 
 ---
@@ -60,10 +60,9 @@ Fantastic Four - Dialora/
 │   ├── database.py             ← SQLAlchemy engine + session factory
 │   ├── models.py               ← ORM models: Campaign, Contact, CallLog
 │   ├── local_ai.py             ← Ollama integration, streaming, intent-only tags, QA scoring
-│   ├── emotion_classifier.py   ← HuggingFace distilRoBERTa emotion classifier (NEW)
-│   ├── local_audio.py          ← TTS: pyttsx3 (default) or suno/bark (USE_BARK flag)
-│   ├── twilio_calls.py         ← Twilio REST client + make_demo_call()
-│   ├── main.py                 ← FastAPI app: all routes + WebSocket + SSE
+│   ├── emotion_classifier.py   ← HuggingFace distilRoBERTa emotion classifier
+│   ├── local_audio.py          ← TTS: pyttsx3 (for instantaneous audio to avoid WebSocket limits)
+│   ├── main.py                 ← FastAPI app: all routes + WebSockets + QR Code networking
 │   ├── requirements.txt        ← Python dependencies
 │   ├── start.bat               ← Windows launch script
 │   ├── dialora.db              ← SQLite database (auto-created)
@@ -164,13 +163,15 @@ On startup, the app logs Ollama status (GET `/api/tags`), Twilio config, and Ngr
 | **POST** | **`/api/simulate/turn/stream`** | **SSE streaming turn.** Form: `session_id, user_text, campaign_id`. Returns `text/event-stream`. See section 6. |
 | POST | `/api/simulate/end` | Scores transcript via QA LLM, saves CallLog. JSON body: `{ campaign_id, transcript, final_intent }` |
 
-### Twilio Real-World Calling
-| Method | Path | Description |
-|---|---|---|
-| POST | `/api/demo/call` | Trigger outbound call via Twilio. JSON body: `{ campaign_id }`. Returns `error:` string on Twilio SDK failure. |
-| POST | `/twilio/voice` | Twilio webhook: call answered, stores campaign KB in session, sends greeting, opens `<Gather>` |
-| POST | `/twilio/gather` | Twilio webhook: processes `SpeechResult`, calls `generate_ai_response()` with correct kwargs, responds with TwiML |
-| POST | `/twilio/status` | Twilio status callback, used to clean up session state |
+### Twilio Real-World Calling (REMOVED)
+Twilio was entirely purged from the codebase to bypass setup friction. Instead, Dialora handles incoming calls strictly using internal LAN WebSocket architecture with Vite binding to `0.0.0.0` over port `5173`. Users generate a QR link on the Dashboard, scan it with their phone on the same Wi-Fi, and initiate the call via Chrome on their mobile device.
+
+### WebSockets & Mobile Link
+| Path | Description |
+|---|---|
+| `POST /api/call/start` | Creates a unique backend session and local network URL (`http://<IP>:5173/call?session...`) for the QR generator |
+| `ws://{host}:8000/ws/calls` | Push-only broadcast for the Dashboard Live Monitor. |
+| `ws://{host}:8000/ws/call/{session_id}` | Bidirectional WebSocket directly communicating with the Mobile Phone `CallPage.tsx` |
 
 ### WebSocket
 | Path | Description |
@@ -342,41 +343,18 @@ The system prompt still instructs Nandita HOW to respond to emotions (de-escalat
 
 ---
 
-## 9. Twilio Integration (`twilio_calls.py` + `main.py`)
+## 9. Twilio Purge & Internal LAN Routing
 
-### `twilio_calls.py` — Lazy Client Init
-The Twilio client is **NOT initialized at module import time** (it was a bug — env vars weren't loaded yet). Instead:
-- `_get_client()` reads `os.getenv()` on every call
-- `make_demo_call()` calls `load_dotenv(override=True)` first to pick up any `.env` changes since startup
+Twilio was deeply ingrained into Dialora, but was purged due to ngrok timeout limitations, slow `<Say>` blocks, and strict Twilio token issues.
+**Replacement:**
+Dialora now bridges the laptop with the user's mobile phone natively over internal Wi-Fi via `CallPage.tsx`.
 
-### How a demo call works:
-1. Frontend Dashboard → `POST /api/demo/call { campaign_id }`
-2. `make_demo_call()` Twilio-dials `DEMO_PHONE_NUMBER` from `TWILIO_PHONE_NUMBER`
-3. Twilio webhook: `{NGROK_URL}/twilio/voice?campaign_id=X`
-4. `/twilio/voice` fires → stores `{ messages, context, script, knowledge_base }` in `twilio_sessions[call_sid]`, broadcasts `call_started` via WebSocket, sends TwiML `<Say>` greeting + `<Gather>`
-5. Customer speaks → `/twilio/gather` processes `SpeechResult`
-6. Calls `generate_ai_response(prompt=..., context=..., business_context=..., script=..., knowledge_base=...)` — **keyword args required**
-7. Broadcasts `user_spoke` + `ai_replied` (now includes `emotion` field)
-8. Responds with TwiML `<Say voice="Polly.Aditi">` + next `<Gather speech_timeout=1>`
-9. Call ends when LLM emits `[END_CALL]` or after 20 turns
-
-### Error codes from `make_demo_call()`:
-- `"twilio_not_configured"` → missing creds in .env
-- `"missing_config"` → DEMO_PHONE_NUMBER or NGROK_URL missing
-- `"error:<message>"` → Twilio SDK exception
-
-### Required `.env` variables:
-```
-TWILIO_ACCOUNT_SID=ACxxxx
-TWILIO_AUTH_TOKEN=xxxx
-TWILIO_PHONE_NUMBER=+1xxxxxxxxxx    # Provisioned Twilio number
-DEMO_PHONE_NUMBER=+91xxxxxxxxx      # Target phone to dial
-NGROK_URL=https://xxxx.ngrok-free.app  # Public tunnel to localhost:8000
-```
-
-> **NGROK_URL changes every time you restart ngrok** (on the free plan). Always update `.env` and call `make_demo_call()` which re-reads it via `load_dotenv(override=True)`.
-
-> **`.env` encoding gotcha:** If the first character of `.env` looks garbled (e.g. `765treTWILIO_ACCOUNT_SID=...`), the file was saved as UTF-16 by Windows Notepad. Fix by rewriting line 1 or saving as UTF-8 encoding.
+1. User clicks **"Generate Call Link"** on Dashboard.
+2. The Dashboard hits `/api/call/start`, fetching the UUID session.
+3. Dashboard creates a QR code displaying the local IP address dynamically.
+4. User scans the QR code.
+5. Due to Vite config `host: true`, the mobile successfully resolves. **NOTE:** The user must enable the Chrome flag `chrome://flags/#unsafely-treat-insecure-origin-as-secure` with the local IP to allow `webkitSpeechRecognition` over HTTP!
+6. The phone opens a direct, bidirectional, low-latency WebSocket connection (`/ws/call/{id}`) and natively records, responds, and streams audio back using Pyttsx3.
 
 ---
 
@@ -398,14 +376,12 @@ Routes defined in `App.tsx`:
 
 ### `Dashboard.tsx`
 - **AnimatedCounter**: Counts up 0→target on mount (1500ms, 16ms ticks).
-- **Metric cards**: Total Calls, Conversion Rate, Active Campaigns — SVG sparkline, color-coded top border.
+- **Metric cards**: Total Calls, Conversion Rate, Active Campaigns.
 - **Recent Call Logs table**: Clicking row opens Log Viewer Modal with full transcript replay.
 - **Live Activity Feed**: Timeline of recent calls + CSV uploads.
-- **Live Demo Call Modal** — two states:
-  - **Twilio NOT configured**: Shows amber warning + `.env` setup guide with all 5 required keys, step-by-step instructions, "Re-check Config" button
-  - **Twilio configured**: Green badge + campaign selector + dial button
-- **Live Call Monitor (WebSocket)**: LIVE badge, intent badge, call timer, real-time transcript bubbles. Auto-scrolls. Disappears on `call_ended`.
-- **Log Viewer Modal**: Full historical transcript with QA summary.
+- **Generate Call Link Modal** — two states:
+  - Select an active campaign, then generate a dynamic QR code bridging the user's mobile device via LAN to the server.
+- **Live Call Monitor (WebSocket)**: LIVE badge, intent badge, call timer, real-time transcript bubbles.
 - All `alert()` calls replaced with `showToast()`.
 
 ### `Campaign.tsx` — 3-Step Wizard
@@ -498,28 +474,21 @@ Custom animations:
 - Python 3.13 virtual environment
 - Ollama installed and running: `ollama serve` + `ollama pull llama3.2`
 - Node.js 18+
-- (Optional for real calls) Twilio account + Ngrok
 
 ### Backend
 ```powershell
 # From: c:\Users\hunte\Fantastic Four - Dialora\backend\
 .env\Scripts\activate
 pip install -r requirements.txt   # only first time
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8000 --host 0.0.0.0
 ```
 
 ### Frontend
 ```powershell
 # From: c:\Users\hunte\Fantastic Four - Dialora\frontend\
 npm install   # only first time
-npm run dev   # Starts Vite dev server at http://localhost:5173
+npm run dev   # Starts Vite dev server exposed to LAN
 ```
-
-### For Twilio Live Calls
-1. Start Ngrok: `ngrok http 8000`
-2. Update `NGROK_URL` in `backend/.env`
-3. The backend picks up the new URL automatically on next call (via `load_dotenv(override=True)`)
-4. Click "Live Demo Call" on the Dashboard
 
 ---
 
@@ -618,4 +587,5 @@ npm run dev   # Starts Vite dev server at http://localhost:5173
 | Session 2 | Dashboard analytics, CSV upload, call log scoring, Twilio integration, premium UI overhaul |
 | Session 3 | Latency reduction (SSE streaming), Emotional Intelligence (10 emotions via LLM tags), Twilio bug fixes, Nandita persona |
 | Session 4 | `.env` UTF-16 fix, Twilio setup guide modal, fixed `generate_ai_response` arg order, lazy Twilio client, roleplay enforcement |
-| **Session 5 (current)** | HuggingFace emotion classifier, Bark TTS, auto-greeting, speaking indicator, Ollama pre-warm, ngrok in sidebar, emotion in live monitor, claude.md full rewrite |
+| Session 5 | HuggingFace emotion classifier, Bark TTS, auto-greeting, speaking indicator, Ollama pre-warm, ngrok in sidebar, emotion in live monitor, claude.md full rewrite |
+| **Session 6** | Completely stripped out Twilio to remove dependency friction. Added `qrcode.react`, built a `0.0.0.0` LAN WebSocket network linking the laptop UI to Mobile Chrome directly! Addressed complex latency, UI Sidebar routing errors, and disabled `USE_BARK` as it heavily disrupted single-threaded Asyncio WebSockets. |
