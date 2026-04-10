@@ -66,6 +66,8 @@ Fantastic Four - Dialora/
 │   ├── requirements.txt        ← Python dependencies
 │   ├── start.bat               ← Windows launch script
 │   ├── dialora.db              ← SQLite database (auto-created)
+│   ├── sip_caller.py           ← Asterisk SIP dialing script creator
+│   ├── dialora_agent.agi       ← Asterisk AGI python script for full call control
 │   ├── test_leads.csv          ← Sample CSV for Contacts upload
 │   └── static/                 ← TTS .wav files served here (gitignored)
 └── frontend/
@@ -163,15 +165,22 @@ On startup, the app logs Ollama status (GET `/api/tags`), Twilio config, and Ngr
 | **POST** | **`/api/simulate/turn/stream`** | **SSE streaming turn.** Form: `session_id, user_text, campaign_id`. Returns `text/event-stream`. See section 6. |
 | POST | `/api/simulate/end` | Scores transcript via QA LLM, saves CallLog. JSON body: `{ campaign_id, transcript, final_intent }` |
 
-### Twilio Real-World Calling (REMOVED)
-Twilio was entirely purged from the codebase to bypass setup friction. Instead, Dialora handles incoming calls strictly using internal LAN WebSocket architecture with Vite binding to `0.0.0.0` over port `5173`. Users generate a QR link on the Dashboard, scan it with their phone on the same Wi-Fi, and initiate the call via Chrome on their mobile device.
+### Asterisk Auto-Outbound Calling
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/asterisk/status` | Process-level check yielding true/false if asterisk is running |
+| POST | `/api/call/auto` | Drops a .call file in `/var/spool/asterisk/outgoing/` to auto-dial a single lead via SIP |
+| POST | `/api/campaign/{id}/autodial` | Background asyncio task that dials all pending contacts inside a loop with 10s delay. Updates db contact status. |
+| POST | `/api/agi/turn` | Internal AGI endpoint. Asterisk dialora_agent.agi hits this to retrieve AI responses. |
+| POST | `/api/agi/tts` | Internal AGI endpoint serving asterisk-formatted path for local playback. |
 
 ### WebSockets & Mobile Link
 | Path | Description |
 |---|---|
 | `POST /api/call/start` | Creates a unique backend session and local network URL (`http://<IP>:5173/call?session...`) for the QR generator |
-| `ws://{host}:8000/ws/calls` | Push-only broadcast for the Dashboard Live Monitor. |
-| `ws://{host}:8000/ws/call/{session_id}` | Bidirectional WebSocket directly communicating with the Mobile Phone `CallPage.tsx` |
+| `ws://{host}:8000/ws/calls` | Push-only broadcast for the Dashboard Live Monitor. Emits `auto_dial` events for feed. |
+| `ws://{host}:8000/ws/call/{session_id}` | Bidirectional WebSocket directly communicating with the Mobile Phone QR `CallPage.tsx` |
+| `ws://{host}:8000/ws/webrtc/{session_id}` | Desktop WebRTC endpoint passing text -> ai sentence stream + TTS url back |
 
 ### WebSocket
 | Path | Description |

@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""
+dialora_agent.agi — Asterisk AGI script for Dialora outbound calls.
+
+Place this file in: /var/lib/asterisk/agi-bin/dialora_agent.agi
+Make executable:    chmod +x /var/lib/asterisk/agi-bin/dialora_agent.agi
+
+This script runs when an Asterisk outbound call connects.
+Flow:
+  1. Answer call
+  2. Generate greeting TTS → play it
+  3. Record caller speech → transcribe with faster-whisper
+  4. Send to Dialora backend AI → get reply
+  5. Generate reply TTS → play it
+  6. Loop until [END_CALL] or hangup
+  7. POST transcript to /api/simulate/end to save CallLog
+"""
+
+import sys
+import os
+import json
+import time
+import requests
+import tempfile
+import subprocess
+
+# ─── AGI helpers ─────────────────────────────────────────────────────────────
+
+def agi_send(cmd: str):
+    sys.stdout.write(cmd + "\n")
+    sys.stdout.flush()
+
+def agi_result() -> str:
+    return sys.stdin.readline().strip()
+
+def agi_exec(cmd: str) -> str:
+    agi_send(cmd)
+    return agi_result()
+
+def agi_answer():
+    agi_exec("ANSWER")
+
+def agi_hangup():
+    agi_exec("HANGUP")
+
+def agi_stream_file(filename: str):
+    """Play an audio file (no extension — Asterisk resolves it)."""
+    agi_exec(f'STREAM FILE "{filename}" ""')
+
+def agi_record_file(filename: str, max_sec: int = 15, silence_sec: int = 3) -> bool:
+    """Record caller speech to a file. Returns True on success."""
+    result = agi_exec(
+        f'RECORD FILE "{filename}" wav "#" {max_sec * 1000} {silence_sec * 1000} BEEP s=1'
+    )
+    return "result=0" in result or "result=" in result
+
+# ─── Env / config ────────────────────────────────────────────────────────────
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+CAMPAIGN_ID = os.getenv("CAMPAIGN_ID", "")
+STATIC_DIR  = "/var/lib/asterisk/sounds/dialora"  # where we save TTS audio
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# ─── Read AGI env block ──────────────────────────────────────────────────────
+
+agi_vars: dict = {}
+while True:
+    line = sys.stdin.readline().strip()
+    if not line:
+        break
+    if ":" in line:
+        k, v = line.split(":", 1)
+        agi_vars[k.strip()] = v.strip()
+
+# ─── Faster-whisper transcription ───────────────────────────────────────────
+
+def transcribe_wav(wav_path: str) -> str:
+    """Transcribe a WAV file using faster-whisper tiny model."""
+    try:
+        from faster_whisper import WhisperModel
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(wav_path, language="en")
+        return " ".join(s.text for s in segments).strip()
+    except ImportError:
+        # Fallback: run whisper as subprocess
+        try:
+            result = subprocess.run(
+                ["whisper", wav_path, "--model", "tiny", "--output_format", "txt",
+                 "--output_dir", os.path.dirname(wav_path)],
+                capture_output=True, text=True, timeout=60
+            )
+            txt_path = wav_path.replace(".wav", ".txt")
+            if os.path.exists(txt_path):
+                with open(txt_path) as f:
+                    return f.read().strip()
+        except Exception:
+            pass
+    return ""
+
+# ─── AI response via Dialora backend ────────────────────────────────────────
+
+def get_ai_reply(messages: list, campaign_id: str) -> dict:
+    """Call the Dialora backend to get an AI reply."""
+    try:
+        # Use existing simulate/turn/stream as a non-SSE fallback
+        # We'll call generate_ai_response directly via a helper endpoint if present,
+        # otherwise fall back to simulate endpoint
+        payload = {
+            "session_id": f"agi_{int(time.time())}",
+            "user_text": messages[-1]["content"] if messages else "",
+            "campaign_id": campaign_id or None
+        }
+        r = requests.post(
+            f"{BACKEND_URL}/api/agi/turn",
+            json=payload,
+            timeout=30
+        )
+        if r.ok:
+            return r.json()
+    except Exception as e:
+        print(f"[AGI] get_ai_reply error: {e}", file=sys.stderr)
+    return {"reply": "I'm sorry, I'm having trouble understanding. Could you repeat that?", "intent": "NEUTRAL", "emotion": "NEUTRAL"}
+
+# ─── TTS via Dialora backend ─────────────────────────────────────────────────
+
+def get_tts_file(text: str) -> str | None:
+    """Ask Dialora backend to generate TTS and return path for Asterisk."""
+    try:
+        r = requests.post(
+            f"{BACKEND_URL}/api/agi/tts",
+            json={"text": text},
+            timeout=15
+        )
+        if r.ok:
+            data = r.json()
+            return data.get("asterisk_path")  # path without extension for Asterisk
+    except Exception as e:
+        print(f"[AGI] get_tts_file error: {e}", file=sys.stderr)
+    return None
+
+# ─── Save call log ────────────────────────────────────────────────────────────
+
+def save_call_log(messages: list, campaign_id: str):
+    try:
+        transcript_lines = [
+            f"{'Customer' if m['role'] == 'user' else 'Nandita'}: {m['content']}"
+            for m in messages
+        ]
+        requests.post(
+            f"{BACKEND_URL}/api/simulate/end",
+            json={
+                "campaign_id": int(campaign_id) if campaign_id else None,
+                "transcript": "\n".join(transcript_lines),
+                "final_intent": "Neutral"
+            },
+            timeout=15
+        )
+    except Exception as e:
+        print(f"[AGI] save_call_log error: {e}", file=sys.stderr)
+
+# ─── Main call loop ──────────────────────────────────────────────────────────
+
+def main():
+    agi_answer()
+    time.sleep(0.5)
+
+    messages = []
+    campaign_id = CAMPAIGN_ID
+
+    # Generate and play greeting
+    greeting = f"Hello! I'm Nandita, your AI assistant. Is this a good time to talk?"
+    greeting_file = get_tts_file(greeting)
+    if greeting_file:
+        agi_stream_file(greeting_file)
+    messages.append({"role": "assistant", "content": greeting})
+
+    max_turns = 15
+    for turn in range(max_turns):
+        # Record customer speech
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=STATIC_DIR) as tmp:
+            tmp_path = tmp.name
+
+        recorded = agi_record_file(tmp_path.replace(".wav", ""), max_sec=20, silence_sec=3)
+        if not recorded:
+            break
+
+        # Transcribe
+        user_text = transcribe_wav(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        if not user_text:
+            # Play a prompt
+            prompt_file = get_tts_file("I didn't catch that. Could you repeat?")
+            if prompt_file:
+                agi_stream_file(prompt_file)
+            continue
+
+        messages.append({"role": "user", "content": user_text})
+
+        # Get AI reply
+        result = get_ai_reply(messages, campaign_id)
+        reply = result.get("reply", "Let me think about that.")
+        messages.append({"role": "assistant", "content": reply})
+
+        # Play reply
+        reply_file = get_tts_file(reply)
+        if reply_file:
+            agi_stream_file(reply_file)
+
+        # Check for end signal
+        if "[END_CALL]" in reply:
+            break
+
+    # Save transcript
+    save_call_log(messages, campaign_id)
+    agi_hangup()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Save, CheckCircle, UploadCloud, ChevronRight, ChevronLeft, Building2, BrainCircuit } from 'lucide-react';
+import { Save, CheckCircle, UploadCloud, ChevronRight, ChevronLeft, Building2, BrainCircuit, Rocket, Phone } from 'lucide-react';
 import { showToast } from '../App';
 
 export default function Campaign() {
@@ -15,6 +15,26 @@ export default function Campaign() {
     script: '',
     knowledge_base: ''
   });
+  
+  // Auto-Dialer tracking states
+  const [newCampaignId, setNewCampaignId] = useState<number | null>(null);
+  const [dialingStatus, setDialingStatus] = useState<'idle' | 'starting' | 'dialing'>('idle');
+  const [totalQueued, setTotalQueued] = useState(0);
+  const [dialedContacts, setDialedContacts] = useState<string[]>([]);
+  
+  // Listen for websocket events on success screen
+  useEffect(() => {
+    if (step === 4 && dialingStatus === 'dialing') {
+      const ws = new WebSocket('ws://localhost:8000/ws/calls');
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'auto_dial') {
+          setDialedContacts(prev => [data.contact_name, ...prev].slice(0, 5));
+        }
+      };
+      return () => ws.close();
+    }
+  }, [step, dialingStatus]);
 
   const handleNext = () => {
     if (step === 1 && !formData.name.trim()) {
@@ -58,9 +78,10 @@ export default function Campaign() {
       }
       
       if (res.ok) {
+        setNewCampaignId(data.id);
         showToast('Campaign successfully launched! 🎉', 'success');
         setStep(4); // Success screen
-        setTimeout(() => navigate('/'), 2500);
+        // Removed auto-redirect so user can choose to Auto-Dial
       }
     } catch (e) {
       console.error(e);
@@ -235,11 +256,66 @@ Objection: Too expensive -> Offer 30 days free."
 
         {step === 4 && (
           <div className="flex flex-col items-center justify-center h-full animate-fade-in text-center p-10">
-            <div className="w-24 h-24 bg-dialora-success/20 rounded-full flex items-center justify-center mb-6">
+            <div className="w-24 h-24 bg-dialora-success/20 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(16,185,129,0.3)]">
               <CheckCircle className="w-12 h-12 text-dialora-success" />
             </div>
-            <h2 className="text-3xl font-black text-white">Campaign Activated!</h2>
-            <p className="text-gray-400 mt-2 text-lg">Wiring up local LLM endpoints...</p>
+            <h2 className="text-3xl font-black text-white mb-2">Campaign Activated!</h2>
+            <p className="text-gray-400 text-lg mb-10">Local AI framework initialized.</p>
+            
+            {/* Auto Dialer Feature */}
+            <div className="bg-[#0a0f1e] border border-gray-800 rounded-2xl p-8 w-full max-w-md flex flex-col items-center">
+              {dialingStatus === 'idle' ? (
+                <>
+                  <button 
+                    onClick={async () => {
+                      if (!newCampaignId) return;
+                      setDialingStatus('starting');
+                      try {
+                        const res = await fetch(`http://localhost:8000/api/campaign/${newCampaignId}/autodial`, { method: 'POST' });
+                        if (!res.ok) throw new Error();
+                        const d = await res.json();
+                        setTotalQueued(d.contacts_queued);
+                        setDialingStatus('dialing');
+                        showToast(`Started auto-dialing ${d.contacts_queued} contacts`, 'success');
+                      } catch {
+                        showToast('Failed to start auto-dialer or no pending contacts', 'error');
+                        setDialingStatus('idle');
+                      }
+                    }}
+                    className="flex justify-center items-center gap-3 w-full bg-[#2ee2a3] hover:bg-[#20c28a] text-[#0a0f1e] font-bold text-lg py-4 rounded-xl shadow-[0_0_20px_rgba(46,226,163,0.3)] transition-all hover:scale-105"
+                  >
+                    <Rocket className="w-6 h-6" /> Launch Auto-Dialer
+                  </button>
+                  <p className="text-gray-500 text-xs mt-4 italic">Automatically rings pending contacts via local Asterisk SIP</p>
+                </>
+              ) : (
+                <div className="w-full flex flex-col items-center">
+                  <div className="flex items-center gap-3 text-[#2ee2a3] font-bold text-lg mb-4">
+                    <Phone className="w-5 h-5 animate-pulse" /> 
+                    Dialing contact {Math.min(dialedContacts.length + 1, totalQueued)} of {totalQueued}...
+                  </div>
+                  
+                  {/* Live Feed */}
+                  <div className="w-full h-32 overflow-hidden flex flex-col gap-2 relative">
+                    <div className="absolute top-0 left-0 right-0 h-4 bg-gradient-to-b from-[#0a0f1e] to-transparent z-10"></div>
+                    <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-t from-[#0a0f1e] to-transparent z-10"></div>
+                    {dialedContacts.map((name, i) => (
+                      <div key={i} className="bg-[#111827] border border-gray-800 text-gray-300 text-sm py-2 px-4 rounded-lg flex justify-between animate-fade-in" style={{ opacity: 1 - (i * 0.2) }}>
+                        <span>Dialing <strong>{name}</strong></span>
+                        <span className="text-[#2ee2a3] text-xs uppercase tracking-widest">Calling</span>
+                      </div>
+                    ))}
+                    {dialedContacts.length === 0 && (
+                      <div className="text-gray-600 text-sm mt-4">Waiting for first connection...</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <button onClick={() => navigate('/')} className="mt-8 text-gray-400 hover:text-white transition-colors">
+              Return to Dashboard
+            </button>
           </div>
         )}
 

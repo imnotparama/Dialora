@@ -31,6 +31,18 @@ import emotion_classifier  # NEW: HuggingFace emotion classifier
 
 connected_websockets = set()
 twilio_sessions = {}
+inbound_call_sessions = {}
+
+def get_local_ip():
+    try:
+        import socket as _socket
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return 'localhost'
 
 async def broadcast_ws(data: dict):
     global connected_websockets
@@ -749,3 +761,386 @@ async def trigger_demo_call(data: dict):
     if str(result).startswith("error:"):
         raise HTTPException(status_code=500, detail=f"Twilio error: {result[6:]}")
     return {"call_sid": result, "status": "dialing"}
+
+
+@app.post("/api/call/start")
+def start_inbound_call(data: dict, db: Session = Depends(get_db)):
+    try:
+        session_id = str(uuid.uuid4())[:8]
+        campaign_id = data.get("campaign_id")
+
+        campaign = None
+        campaign_name = "Generic Demo"
+        context = ""
+        script = ""
+        knowledge_base = ""
+
+        if campaign_id and campaign_id != "null" and campaign_id != "":
+            try:
+                campaign = db.query(Campaign).filter(
+                    Campaign.id == int(campaign_id)
+                ).first()
+                if campaign:
+                    campaign_name = getattr(campaign, 'name', 'Demo')
+                    context = getattr(campaign, 'business_context', '')
+                    script = getattr(campaign, 'script', '')
+                    knowledge_base = getattr(campaign, 'knowledge_base', '')
+            except Exception as e:
+                print(f"Campaign fetch error: {e}")
+
+        inbound_call_sessions[session_id] = {
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
+            "context": context,
+            "script": script,
+            "knowledge_base": knowledge_base,
+            "messages": []
+        }
+
+        local_ip = get_local_ip()
+        call_url = f"http://{local_ip}:5173/call?session={session_id}&host={local_ip}"
+
+        print(f"[QR] Session {session_id} created → {call_url}")
+        return {"session_id": session_id, "call_url": call_url, "local_ip": local_ip}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/call/{session_id}")
+async def websocket_inbound_call(websocket: WebSocket, session_id: str, db: Session = Depends(get_db)):
+    await websocket.accept()
+
+    session = inbound_call_sessions.get(session_id)
+    if not session:
+        await websocket.send_json({"type": "error", "message": "Invalid or expired session ID"})
+        await websocket.close()
+        return
+
+    context = session.get("context", "")
+    script = session.get("script", "")
+    knowledge_base = session.get("knowledge_base", "")
+    campaign_name = session.get("campaign_name", "Demo")
+
+    # Send greeting
+    greeting = f"Hello! I'm Nandita, your AI assistant for {campaign_name}. How can I help you today?"
+    audio_file = local_audio.generate_tts(greeting)
+    session["messages"] = [{"role": "assistant", "content": greeting}]
+
+    await websocket.send_json({
+        "type": "ai_reply",
+        "text": greeting,
+        "audio_url": f"http://{get_local_ip()}:8000/static/{audio_file}",
+        "intent": "NEUTRAL",
+        "emotion": "NEUTRAL"
+    })
+    await broadcast_ws({"type": "call_started", "session_id": session_id, "campaign": campaign_name})
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+
+            if data.get("type") == "user_speech":
+                user_text = data.get("text", "").strip()
+                if not user_text:
+                    continue
+
+                await broadcast_ws({"type": "user_spoke", "session_id": session_id, "text": user_text})
+                session["messages"].append({"role": "user", "content": user_text})
+
+                result = local_ai.generate_ai_response(
+                    prompt=user_text,
+                    context=session["messages"][:-1],
+                    business_context=context,
+                    script=script,
+                    knowledge_base=knowledge_base
+                )
+
+                reply = result.get("reply") or "I understand. Could you tell me more?"
+                intent = result.get("intent", "NEUTRAL") or "NEUTRAL"
+                emotion = result.get("emotion", "NEUTRAL") or "NEUTRAL"
+
+                session["messages"].append({"role": "assistant", "content": reply})
+
+                audio_file = local_audio.generate_tts(reply)
+                local_ip = get_local_ip()
+
+                await websocket.send_json({
+                    "type": "ai_reply",
+                    "text": reply,
+                    "audio_url": f"http://{local_ip}:8000/static/{audio_file}",
+                    "intent": intent,
+                    "emotion": emotion
+                })
+                await broadcast_ws({
+                    "type": "ai_replied",
+                    "session_id": session_id,
+                    "text": reply,
+                    "intent": intent,
+                    "emotion": emotion
+                })
+
+                if "[END_CALL]" in reply:
+                    await websocket.send_json({"type": "call_ended"})
+                    break
+
+            elif data.get("type") == "end_call":
+                await websocket.send_json({"type": "call_ended"})
+                break
+
+    except Exception as e:
+        print(f"[WS] Call error: {e}")
+    finally:
+        await broadcast_ws({"type": "call_ended", "session_id": session_id})
+        inbound_call_sessions.pop(session_id, None)
+
+
+# ─── WebRTC Desktop Call WebSocket ───────────────────────────────────────────
+# Receives speech-as-text from the browser WebRTC page,
+# responds with TTS sentence events. Uses existing local_ai + local_audio.
+
+webrtc_sessions: dict = {}
+
+@app.websocket("/ws/webrtc/{session_id}")
+async def websocket_webrtc_call(websocket: WebSocket, session_id: str, db: Session = Depends(get_db)):
+    await websocket.accept()
+
+    context = ""
+    script = ""
+    knowledge_base = ""
+    campaign_name = "Generic Demo"
+    messages_history: list = []
+
+    try:
+        # First message must be init
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+        init_data = json.loads(raw)
+
+        if init_data.get("type") == "init":
+            campaign_id = init_data.get("campaign_id")
+            if campaign_id and str(campaign_id) not in ("", "null", "None"):
+                try:
+                    campaign = db.query(Campaign).filter(Campaign.id == int(campaign_id)).first()
+                    if campaign:
+                        campaign_name = campaign.name or campaign_name
+                        context = campaign.business_context or ""
+                        script = campaign.script or ""
+                        knowledge_base = campaign.knowledge_base or ""
+                except Exception as e:
+                    print(f"[WebRTC] Campaign fetch error: {e}")
+
+        # Send greeting
+        greeting = f"Hello! I'm Nandita, your AI assistant for {campaign_name}. How can I help you today?"
+        audio_file = local_audio.generate_tts(greeting)
+        local_ip = get_local_ip()
+        messages_history = [{"role": "assistant", "content": greeting}]
+
+        await websocket.send_json({
+            "type": "greeting",
+            "text": greeting,
+            "audio_url": f"http://{local_ip}:8000/static/{audio_file}"
+        })
+        await broadcast_ws({
+            "type": "call_started",
+            "session_id": session_id,
+            "campaign": campaign_name,
+            "source": "webrtc"
+        })
+
+        # Main conversation loop
+        while True:
+            raw = await websocket.receive_text()
+            data = json.loads(raw)
+
+            if data.get("type") == "end_call":
+                await websocket.send_json({"type": "call_ended"})
+                break
+
+            if data.get("type") != "user_speech":
+                continue
+
+            user_text = (data.get("text") or "").strip()
+            if not user_text:
+                continue
+
+            messages_history.append({"role": "user", "content": user_text})
+            await broadcast_ws({"type": "user_spoke", "session_id": session_id, "text": user_text, "source": "webrtc"})
+
+            # Get AI response (non-streaming for WS stability)
+            result = local_ai.generate_ai_response(
+                prompt=user_text,
+                context=messages_history[:-1],
+                business_context=context,
+                script=script,
+                knowledge_base=knowledge_base
+            )
+
+            reply = result.get("reply") or "Could you tell me more?"
+            intent = result.get("intent", "NEUTRAL") or "NEUTRAL"
+            emotion = result.get("emotion", "NEUTRAL") or "NEUTRAL"
+            messages_history.append({"role": "assistant", "content": reply})
+
+            # Send each sentence separately for progressive audio
+            import re as _re
+            sentences = _re.split(r'(?<=[.!?])\s+', reply.strip())
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                audio_file = local_audio.generate_tts(sentence)
+                await websocket.send_json({
+                    "type": "sentence",
+                    "text": sentence,
+                    "audio_url": f"http://{get_local_ip()}:8000/static/{audio_file}"
+                })
+
+            await websocket.send_json({
+                "type": "done",
+                "intent": intent,
+                "emotion": emotion
+            })
+            await broadcast_ws({
+                "type": "ai_replied",
+                "session_id": session_id,
+                "text": reply,
+                "intent": intent,
+                "emotion": emotion,
+                "source": "webrtc"
+            })
+
+            if "[END_CALL]" in reply:
+                await websocket.send_json({"type": "call_ended"})
+                break
+
+    except asyncio.TimeoutError:
+        await websocket.send_json({"type": "error", "message": "Init message timeout"})
+    except Exception as e:
+        print(f"[WebRTC WS] Error: {e}")
+    finally:
+        await broadcast_ws({"type": "call_ended", "session_id": session_id, "source": "webrtc"})
+
+# ─── Asterisk Outbound & Auto-Dialer Endpoints ───────────────────────────────
+
+import sip_caller
+
+@app.get("/api/asterisk/status")
+def get_asterisk_status():
+    """Checks if the Asterisk service is running on the machine."""
+    return sip_caller.get_asterisk_status()
+
+
+@app.post("/api/call/auto")
+async def trigger_auto_call(data: dict):
+    """Trigger a single outbound call via Asterisk."""
+    phone_number = data.get("phone_number", "")
+    campaign_id = data.get("campaign_id")
+    
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="Phone number required")
+
+    result = sip_caller.initiate_call(phone_number, int(campaign_id) if campaign_id else 0)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message"))
+    
+    await broadcast_ws({
+        "type": "auto_dial_started", 
+        "phone": phone_number, 
+        "campaign_id": campaign_id
+    })
+    return result
+
+
+@app.post("/api/campaign/{campaign_id}/autodial")
+async def start_campaign_autodial(campaign_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Background task to dial all pending contacts in a campaign using Asterisk."""
+    contacts = db.query(Contact).filter(
+        Contact.campaign_id == campaign_id,
+        Contact.status == "pending"
+    ).all()
+    
+    if not contacts:
+        raise HTTPException(status_code=400, detail="No pending contacts found")
+
+    async def _autodial_loop(contact_list):
+        for contact in contact_list:
+            if not contact.phone_number:
+                continue
+                
+            print(f"[AutoDialer] Dialing {contact.name} ({contact.phone_number})...")
+            
+            # Send WS event to UI
+            await broadcast_ws({
+                "type": "auto_dial",
+                "contact_name": contact.name,
+                "phone": contact.phone_number,
+                "campaign_id": campaign_id
+            })
+            
+            # Trigger Asterisk Call
+            sip_caller.initiate_call(contact.phone_number, campaign_id)
+            
+            # Mark as called in DB
+            db_session = SessionLocal()
+            try:
+                c = db_session.query(Contact).filter(Contact.id == contact.id).first()
+                if c:
+                    c.status = "called"
+                    db_session.commit()
+            finally:
+                db_session.close()
+            
+            # Wait 10 seconds before next dial
+            await asyncio.sleep(10)
+            
+    background_tasks.add_task(_autodial_loop, contacts)
+    return {"status": "started", "contacts_queued": len(contacts)}
+
+# ─── AGI Helper Endpoints ───────────────────────────────────────────────────
+
+class AgiTurnRequest(BaseModel):
+    session_id: str
+    user_text: str
+    campaign_id: Optional[int] = None
+
+@app.post("/api/agi/turn")
+def agi_turn(req: AgiTurnRequest, db: Session = Depends(get_db)):
+    """Called by Asterisk dialora_agent.agi to get the next AI response."""
+    context = ""
+    script = ""
+    kb = ""
+    
+    if req.campaign_id:
+        campaign = db.query(Campaign).filter(Campaign.id == req.campaign_id).first()
+        if campaign:
+            context = campaign.business_context or ""
+            script = campaign.script or ""
+            kb = campaign.knowledge_base or ""
+            
+    # For AGI we only keep light history as it's passed per script invocation,
+    # or rely on the prompt context if history isn't saved.
+    # We construct a simple prompt here
+    messages = [{"role": "user", "content": req.user_text}]
+    
+    result = local_ai.generate_ai_response(
+        prompt=req.user_text,
+        context=[],
+        business_context=context,
+        script=script,
+        knowledge_base=kb
+    )
+    return result
+
+@app.post("/api/agi/tts")
+def agi_tts(data: dict):
+    """Called by Asterisk to generate TTS. Returns path without .mp3/.wav extension."""
+    text = data.get("text", "")
+    if not text:
+        return {"error": "no text"}
+    filename = local_audio.generate_tts(text)
+    # Give full path without extension /var/lib/asterisk/sounds/dialora/file
+    abs_path = os.path.abspath(f"static/{filename}")
+    asterisk_path = abs_path.rsplit('.', 1)[0] 
+    return {"asterisk_path": asterisk_path}
+

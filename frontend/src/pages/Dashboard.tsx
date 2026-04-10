@@ -50,7 +50,9 @@ export default function Dashboard() {
   const [callUrl, setCallUrl] = useState('');
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [selectedDemoCampaign, setSelectedDemoCampaign] = useState('');
-    const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [autoDialActive, setAutoDialActive] = useState(false);
+  const autoDialTimeoutRef = useRef<any>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -80,6 +82,11 @@ export default function Dashboard() {
           setLiveCall(null);
           // Fetch data again after call ends to update logs
           fetchData();
+        }
+        if (data.type === 'auto_dial' || data.type === 'auto_dial_started') {
+          setAutoDialActive(true);
+          if (autoDialTimeoutRef.current) clearTimeout(autoDialTimeoutRef.current);
+          autoDialTimeoutRef.current = setTimeout(() => setAutoDialActive(false), 20000);
         }
       } catch (e) {}
     };
@@ -136,6 +143,33 @@ export default function Dashboard() {
     }
   };
 
+  const handleAutoDial = async (log: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const statusRes = await fetch('http://localhost:8000/api/asterisk/status');
+      const statusData = await statusRes.json();
+      if (!statusData.running) {
+        showToast("❌ Asterisk not running", "error");
+        return;
+      }
+      
+      const phone = log.phone_number || "+919999999999";
+      const res = await fetch('http://localhost:8000/api/call/auto', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone_number: phone, campaign_id: log.campaign_id })
+      });
+      
+      if (res.ok) {
+        showToast(`📞 Dialing ${phone}...`, "success");
+      } else {
+        showToast("Failed to initiate auto-dial", "error");
+      }
+    } catch (err) {
+      showToast("Error connecting to Asterisk", "error");
+    }
+  };
+
   const getIntentBadge = (intent: string) => {
     const safe = (intent || 'Neutral').toUpperCase();
     if (safe.includes('NOT')) return <span className="text-[10px] uppercase font-bold tracking-widest text-red-300 bg-red-900/60 px-2.5 py-1 rounded-md border border-red-500/30">Not Interested</span>;
@@ -179,6 +213,13 @@ export default function Dashboard() {
             {time.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })} • {time.toLocaleTimeString()}
           </div>
         </div>
+        
+        {autoDialActive && (
+          <div className="flex items-center gap-2 bg-red-500/20 text-red-400 px-4 py-2 rounded-full border border-red-500/50 animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]">
+            <PhoneOutgoing className="w-4 h-4" />
+            <span className="text-xs font-bold uppercase tracking-widest">Auto-Dial Active</span>
+          </div>
+        )}
         
         <div className="flex items-center gap-4">
           <div className="relative group hidden md:block">
@@ -438,6 +479,13 @@ export default function Dashboard() {
                           <td className="py-4 px-4 text-right text-gray-500 text-xs flex items-center justify-end gap-2">
                             {timeAgo(log.created_at)}
                             <MessageSquare className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity text-cyan-500" />
+                            <button 
+                              onClick={(e) => handleAutoDial(log, e)}
+                              className="ml-2 w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center hover:bg-dialora-indigo/20 text-gray-400 hover:text-dialora-accent transition-all hover:shadow-[0_0_10px_rgba(46,226,163,0.4)] opacity-0 group-hover:opacity-100 pointer-events-auto"
+                              title="Auto Dial"
+                            >
+                              <Phone className="w-4 h-4" />
+                            </button>
                           </td>
                         </tr>
                       ))}

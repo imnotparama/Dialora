@@ -13,3 +13,5 @@ scipy
 soundfile
 websockets>=12.0
 twilio>=8.0.0
+faster-whisper
+pyst2

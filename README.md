@@ -21,6 +21,8 @@ Intelligent Local-First AI Tele-Calling Agent & Conversation Analytics Platform
 | 📊 **Live Dashboard** | Real-time visualization of call metrics, lead conversion rates, and live transcriptions |
 | 🧩 **Emotion Detection** | HuggingFace distilRoBERTa dynamically identifies user emotion (Angry, Hesitant, etc.) to adapt the agent's tone |
 | 🗣️ **Instant Voice Pipeline** | Combines Native Browser Speech-to-Text with instant offline Text-to-Speech (`pyttsx3`) for zero-latency conversations |
+| 📞 **Asterisk Auto-Dialer** | Generate `.call` files and execute outbound dialing campaigns autonomously completely for free via a local SIP trunk (Asterisk PBX integration) |
+| 💻 **WebRTC Desktop Call** | Dedicated desktop-first local calling UI mapping browser microphone data directly to local AI via WebSockets |
 | ⚙️ **Bidirectional Streaming** | FastAPI backend with structured REST API and WebSocket events for live Call Hub synchronization |
 
 ---
@@ -127,6 +129,11 @@ npm run dev
 * Backend passes transcription into HuggingFace distilRoBERTa, mapping it against 10 emotional classes (Angry, Hesitant, Excited, etc.).
 * Llama 3.2 ingests contextual history, business context, and emotional tags to tailor its textual response.
 * `pyttsx3` synthesizes the offline MP4 in milliseconds, distributing both the TTS and live socket intent tags back to the Dashboard and caller interface.
+
+**📡 PBX / Asterisk Auto-Outbound Dialer**
+* A dedicated `sip_caller.py` dynamically writes standard `.call` files into `/var/spool/asterisk/outgoing` completely bridging the python environment into Linux telephony.
+* Asterisk handles auto-dialing the SIP endpoint and on answer, instantly hands the physical call's audio loop over to `dialora_agent.agi`.
+* The AGI script loops `faster-whisper` transcription into Dialora LLM response generation, bridging real phone calls securely to your local hardware.
 
 ---
 
