@@ -50,17 +50,27 @@ def _classify_intent_from_user(user_text: str) -> str | None:
 
 
 def _clean_reply(text: str) -> str:
-    """Strips Intent: lines and any inline [INTENT:X] markers from spoken reply."""
+    """Strips Intent: lines and any inline [INTENT:X] markers from spoken reply, then hard-caps at 2 sentences."""
     lines = [
         l for l in text.split('\n')
-        # CHANGED: Only strip Intent: lines, not Emotion: (no longer in LLM output)
         if not re.match(r'^\s*intent\s*:', l, re.IGNORECASE)
+        if not re.match(r'^\s*reply\s*:', l, re.IGNORECASE)
     ]
-    cleaned = '\n'.join(lines).strip()
-    # CHANGED: Only strip [INTENT:X] tags (no more [EMOTION:X] tags to remove)
+    # Strip lines that start with "Reply:" label
+    stripped_lines = []
+    for l in lines:
+        stripped = re.sub(r'^\s*reply\s*:\s*', '', l, flags=re.IGNORECASE)
+        stripped_lines.append(stripped)
+    cleaned = ' '.join(stripped_lines).strip()
     cleaned = re.sub(r'\[INTENT:.*?\]', '', cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r'\.\s*Intent\s*:\s*\S+\s*$', '.', cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r'\s*Intent\s*:\s*\S+\s*$', '', cleaned, flags=re.IGNORECASE).strip()
+    # Hard cap: keep only first 2 sentences
+    sentences = re.split(r'(?<=[.!?])\s+', cleaned.strip())
+    if len(sentences) > 2:
+        cleaned = ' '.join(sentences[:2])
+        if not cleaned[-1] in '.!?':
+            cleaned += '.'
     return cleaned.strip()
 
 
@@ -108,13 +118,14 @@ You will receive context about the caller's emotional state. Adapt your tone acc
 - NEUTRAL/HAPPY → Engage warmly. Ask an open question to draw them in.
 
 CONVERSATION RULES:
-1. Keep responses under 3 sentences maximum
+1. STRICT LIMIT: Respond in 1-2 sentences MAXIMUM. Never more than 2 sentences.
 2. Speak exactly the words you want to say out loud to the customer.
-3. Always end with either a question OR a clear next step
-4. Never repeat the same phrase twice in a conversation
+3. Always end with either a question OR a clear next step — never just a statement.
+4. Never repeat the same phrase twice in a conversation.
 5. If user says "not interested" twice → gracefully end the call:
    "Absolutely, I respect that completely. Have a wonderful day!" then output [END_CALL]
 6. If user asks to call back → confirm and output [CALLBACK]
+7. SHORT IS BETTER. If in doubt, say less. One question at a time.
 """
 
 
@@ -145,9 +156,9 @@ def get_streaming_system_prompt(business_context=None, script=None, knowledge_ba
         "[INTENT:Y]\n\n"
         "Where Y is one of: INTERESTED, NOT_INTERESTED, CALLBACK, NEUTRAL, OBJECTION\n\n"
         "Example:\n"
-        "I completely understand! Could I ask — what specifically caught your interest? "
-        "[INTENT:INTERESTED]\n\n"
-        "IMPORTANT: The tag must be at the very end. Never put it in the middle of your reply."
+        "Could I ask what specifically caught your interest? [INTENT:INTERESTED]\n\n"
+        "CRITICAL: Your entire reply must be 1-2 sentences MAX. No paragraphs. No lists. "
+        "The tag must be at the very end."
     )
     return base
 
@@ -176,12 +187,12 @@ def get_system_prompt(business_context=None, script=None, knowledge_base=None) -
     # CHANGED: Removed "Emotion:" line from structured output format
     base += (
         "STRICT OUTPUT FORMAT — use exactly these two lines in order:\n"
-        "Reply: <your 1-3 sentence spoken response only — no tags here>\n"
+        "Reply: <your 1-2 sentence spoken response — MAXIMUM 2 SENTENCES, no exceptions>\n"
         "Intent: <INTERESTED|NOT_INTERESTED|CALLBACK|NEUTRAL|OBJECTION>\n\n"
         "Example:\n"
-        "Reply: I completely understand and I sincerely apologize for interrupting. "
-        "Could I take just 30 seconds, or would you prefer I call back at a better time?\n"
-        "Intent: NEUTRAL"
+        "Reply: I completely understand. Could I take just 30 seconds of your time?\n"
+        "Intent: NEUTRAL\n\n"
+        "CRITICAL: Reply must be 1-2 sentences ONLY. Never write paragraphs."
     )
     return base
 
