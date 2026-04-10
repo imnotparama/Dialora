@@ -904,8 +904,10 @@ async def websocket_inbound_call(websocket: WebSocket, session_id: str, db: Sess
 webrtc_sessions: dict = {}
 
 @app.websocket("/ws/webrtc/{session_id}")
-async def websocket_webrtc_call(websocket: WebSocket, session_id: str, db: Session = Depends(get_db)):
+async def websocket_webrtc_call(websocket: WebSocket, session_id: str):
     await websocket.accept()
+    
+    db = SessionLocal()
 
     context = ""
     script = ""
@@ -1019,6 +1021,7 @@ async def websocket_webrtc_call(websocket: WebSocket, session_id: str, db: Sessi
     except Exception as e:
         print(f"[WebRTC WS] Error: {e}")
     finally:
+        db.close()
         await broadcast_ws({"type": "call_ended", "session_id": session_id, "source": "webrtc"})
 
 # ─── Asterisk Outbound & Auto-Dialer Endpoints ───────────────────────────────
